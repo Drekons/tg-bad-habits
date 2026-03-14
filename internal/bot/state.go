@@ -19,6 +19,7 @@ const (
 	StateHabitAvgCount              // step 4: entering avg relapses count
 	StateHabitAvgPeriod             // step 5: choosing period (reply buttons)
 	StateViewingHabitStats          // viewing stats for one habit; Back → habit list
+	StateViewingStatsList           // viewing "choose habit for stats"; Back → main
 )
 
 // session stores per-user FSM data.

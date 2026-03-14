@@ -17,11 +17,11 @@ type TrendData struct {
 
 // HabitStats holds all calculated statistics for a single habit.
 type HabitStats struct {
-	Balance          float64
-	BalanceTrend     TrendData
-	AvgTimeBetween   time.Duration
-	AvgTimeTrend     TrendData
-	AvgPerPeriod     float64 // real average relapses per habit's period
+	Balance        float64
+	BalanceTrend   TrendData
+	AvgTimeBetween time.Duration
+	AvgTimeTrend   TrendData
+	AvgPerPeriod   float64 // real average relapses per habit's period
 }
 
 // StatsService computes all statistics from raw data.
@@ -46,6 +46,10 @@ func (s *StatsService) Calc(habit models.Habit, relapses []models.Relapse, now t
 
 	balanceDelta := balanceNow - balanceYesterday
 	avgTimeDelta := avgTimeNow - avgTimeYesterday
+	// При нуле срывов тренд времени = просто "часы с полуночи", что неинформативно — показываем 0
+	if len(relapses) == 0 {
+		avgTimeDelta = 0
+	}
 
 	return HabitStats{
 		Balance: balanceNow,
@@ -87,7 +91,20 @@ func calcBalance(habit models.Habit, relapses []models.Relapse, until time.Time)
 	avgPerDay := habit.AvgRelapsesCount / habit.AvgRelapsesPeriod.Days()
 	potentialLoss := avgPerDay * daysSince * habit.CostPerRelapse
 	realLoss := float64(len(relapses)) * habit.CostPerRelapse
-	return math.Round((potentialLoss-realLoss)*100) / 100
+	balance := math.Round((potentialLoss-realLoss)*100) / 100
+	// Когда срывов не было и время прошло, баланс не должен быть 0 (промежуточный баланс).
+	if len(relapses) == 0 && until.After(habit.OriginAt) && balance <= 0 {
+		daysSince = math.Max(daysSince, 1)
+		avgPerDayMin := habit.AvgRelapsesCount / habit.AvgRelapsesPeriod.Days()
+		if avgPerDayMin <= 0 {
+			avgPerDayMin = 1.0 / 365 // минимум 1 срыв в год для отображения
+		}
+		if habit.CostPerRelapse > 0 {
+			potentialLoss = avgPerDayMin * daysSince * habit.CostPerRelapse
+			return math.Round(potentialLoss*100) / 100
+		}
+	}
+	return balance
 }
 
 // effectiveWakingHours returns waking hours for a daily habit: total time minus 8h sleep

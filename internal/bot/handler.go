@@ -76,7 +76,8 @@ func (h *Handler) Handle(update tgbotapi.Update) {
 		case "✅ Да":
 			h.handleRelapseConfirmed(msg)
 		case "❌ Нет":
-			h.showMain(msg.Chat.ID, userID)
+			h.states.SetState(userID, StateIdle)
+			h.showMain(msg.Chat.ID, userID, true) // сброс клавиатуры и главный экран, иначе кнопки не переключаются
 		default:
 			h.send(msg.Chat.ID, "Пожалуйста, используйте кнопки ниже.", confirmRelapseKeyboard())
 		}
@@ -106,7 +107,7 @@ func (h *Handler) handleStart(msg *tgbotapi.Message) {
 		m := h.sendText(msg.Chat.ID, "С возвращением! 👋")
 		_ = m
 		if len(habits) > 0 {
-			h.showMain(msg.Chat.ID, userID)
+			h.showMain(msg.Chat.ID, userID, false)
 		} else {
 			h.send(msg.Chat.ID, "У вас нет привычек. Создайте первую!", createFirstHabitKeyboard())
 		}
@@ -155,14 +156,20 @@ func (h *Handler) handleMainMenu(msg *tgbotapi.Message) {
 		h.showStatsHabitList(msg)
 
 	case text == "🏠 Перейти на главную":
-		h.showMain(msg.Chat.ID, userID)
+		h.showMain(msg.Chat.ID, userID, false)
 
-	case text == "◀️ Назад":
+	case text == "🏠 На основной экран" || strings.Contains(text, "На основной экран"):
+		h.states.SetState(userID, StateIdle)
+		h.showMain(msg.Chat.ID, userID, true)
+
+	case text == "◀️ Назад" || strings.Contains(text, "Назад"):
 		if state == StateViewingHabitStats {
 			h.states.SetState(userID, StateIdle)
 			h.showStatsHabitList(msg)
 		} else {
-			h.showMain(msg.Chat.ID, userID)
+			// Всегда одно сообщение с клавиатурой при Назад — иначе клиент может не переключить кнопки
+			h.states.SetState(userID, StateIdle)
+			h.showMain(msg.Chat.ID, userID, true)
 		}
 
 	case strings.HasPrefix(text, "📊 "):
@@ -179,13 +186,17 @@ func (h *Handler) handleMainMenu(msg *tgbotapi.Message) {
 				return
 			}
 		}
-		h.showMain(msg.Chat.ID, userID)
+		h.showMain(msg.Chat.ID, userID, false)
 	}
 }
 
 // ─── Main screen ─────────────────────────────────────────────────────────────
 
-func (h *Handler) showMain(chatID int64, userID int64) {
+// showMain shows the main screen. When fromStatsBack is true (возврат со списка статистики),
+// отправляется одно сообщение с текстом и клавиатурой — так клиент гарантированно показывает
+// кнопки фиксации срыва, а не старые кнопки выбора привычки. При fromStatsBack сообщение
+// не регистрируется для автообновления (его нельзя редактировать из-за ReplyMarkup).
+func (h *Handler) showMain(chatID int64, userID int64, fromStatsBack bool) {
 	habits, err := h.habitRepo.GetByUserID(userID)
 	if err != nil {
 		log.Printf("showMain GetByUserID: %v", err)
@@ -200,23 +211,38 @@ func (h *Handler) showMain(chatID int64, userID int64) {
 
 	statsSlice := h.buildAllStats(habits)
 	text := RenderMainScreen(habits, statsSlice)
+	h.states.SetState(userID, StateIdle)
 
-	// Send a separate message to attach the reply keyboard,
-	// because Telegram API forbids editing messages that have a ReplyKeyboardMarkup.
-	// Use zero-width space so the user does not see an extra line of text.
-	kbMsg := tgbotapi.NewMessage(chatID, "\u200B")
-	kbMsg.ReplyMarkup = mainKeyboard(habits)
-	kbMsg.DisableNotification = true
-	h.bot.Send(kbMsg)
+	if fromStatsBack {
+		// Сначала убираем клавиатуру, затем одно сообщение с контентом и клавиатурой главного экрана.
+		// В одном сообщении клавиатура в клиенте подменяется надёжнее (отдельные сообщения часто не переключают кнопки).
+		clearMsg := tgbotapi.NewMessage(chatID, "\u200B")
+		clearMsg.ReplyMarkup = removeKeyboard()
+		clearMsg.DisableNotification = true
+		h.bot.Send(clearMsg)
 
-	// Send the actual stats message without markup so it can be edited by Updater
+		msg := tgbotapi.NewMessage(chatID, text)
+		msg.ParseMode = tgbotapi.ModeMarkdown
+		msg.ReplyMarkup = mainKeyboard(habits)
+		msg.DisableNotification = true
+		if _, err := h.bot.Send(msg); err != nil {
+			log.Printf("showMain fromStatsBack: %v", err)
+		}
+		// Сообщение с ReplyMarkup нельзя редактировать — для автообновления не регистрируем
+		return
+	}
+
+	// Обычный показ: контент без markup (для автообновления) + отдельное сообщение с клавиатурой
 	sent, err := h.sendMarkdown(chatID, text, nil)
 	if err != nil {
 		log.Printf("showMain send: %v", err)
 		return
 	}
+	kbMsg := tgbotapi.NewMessage(chatID, "\u200B")
+	kbMsg.ReplyMarkup = mainKeyboard(habits)
+	kbMsg.DisableNotification = true
+	h.bot.Send(kbMsg)
 
-	h.states.SetState(userID, StateIdle)
 	h.states.SetMainMessageID(userID, sent.MessageID)
 	if err := h.userRepo.UpdateMainMessage(userID, chatID, sent.MessageID); err != nil {
 		log.Printf("showMain UpdateMainMessage: %v", err)
@@ -229,9 +255,11 @@ func (h *Handler) showStatsHabitList(msg *tgbotapi.Message) {
 	userID := msg.From.ID
 	habits, err := h.habitRepo.GetByUserID(userID)
 	if err != nil || len(habits) == 0 {
-		h.send(msg.Chat.ID, "Нет привычек для отображения.", backKeyboard())
+		h.states.SetState(userID, StateIdle)
+		h.send(msg.Chat.ID, "Нет привычек для отображения.", statsToMainKeyboard())
 		return
 	}
+	h.states.SetState(userID, StateViewingStatsList)
 	h.send(msg.Chat.ID, "Выберите привычку:", statsHabitKeyboard(habits))
 }
 
@@ -248,7 +276,7 @@ func (h *Handler) showHabitStats(msg *tgbotapi.Message, habitName string) {
 	}
 	if target == nil {
 		h.send(msg.Chat.ID, "Привычка не найдена.", removeKeyboard())
-		h.showMain(msg.Chat.ID, userID)
+		h.showMain(msg.Chat.ID, userID, false)
 		return
 	}
 
@@ -258,7 +286,7 @@ func (h *Handler) showHabitStats(msg *tgbotapi.Message, habitName string) {
 	text := RenderStatsScreen(*target, st, last20)
 
 	h.states.SetState(userID, StateViewingHabitStats)
-	_, err := h.sendMarkdown(msg.Chat.ID, text, backKeyboard())
+	_, err := h.sendMarkdown(msg.Chat.ID, text, backKeyboard()) // Назад → к списку привычек
 	if err != nil {
 		log.Printf("showHabitStats: %v", err)
 	}
@@ -278,7 +306,7 @@ func (h *Handler) askConfirmRelapse(msg *tgbotapi.Message, habitName string) {
 		}
 	}
 	if target == nil {
-		h.showMain(msg.Chat.ID, userID)
+		h.showMain(msg.Chat.ID, userID, false)
 		return
 	}
 
@@ -301,7 +329,7 @@ func (h *Handler) handleRelapseConfirmed(msg *tgbotapi.Message) {
 	}
 
 	h.send(msg.Chat.ID, "✅ Срыв зарегистрирован.", nil)
-	h.showMain(msg.Chat.ID, userID)
+	h.showMain(msg.Chat.ID, userID, true) // сброс клавиатуры и главный экран, иначе кнопки не переключаются
 }
 
 // ─── Habit creation flow ──────────────────────────────────────────────────────
@@ -396,7 +424,7 @@ func (h *Handler) handleHabitCreationStep(msg *tgbotapi.Message, state State) {
 		h.states.SetState(userID, StateIdle)
 		h.states.ResetDraft(userID)
 		h.send(msg.Chat.ID, fmt.Sprintf("✅ Привычка *%s* создана!", escapeMarkdown(draft.Name)), removeKeyboard())
-		h.showMain(msg.Chat.ID, userID)
+		h.showMain(msg.Chat.ID, userID, true) // сброс клавиатуры и главный экран с кнопками
 	}
 }
 

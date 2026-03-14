@@ -88,6 +88,19 @@ func TestCalcBalance_IntermediateBalance_MonthPeriod(t *testing.T) {
 	}
 }
 
+// When no relapses and time passed, balance must not be 0 (e.g. alcohol 22 days).
+func TestCalcBalance_NoRelapses_NonZeroBalance(t *testing.T) {
+	h := habitBase()
+	h.AvgRelapsesPeriod = models.PeriodMonth
+	h.AvgRelapsesCount = 0 // в БД могло сохраниться 0
+	h.CostPerRelapse = 500
+	until := h.OriginAt.Add(22 * 24 * time.Hour)
+	got := calcBalance(h, nil, until)
+	if got <= 0 {
+		t.Errorf("expected positive balance when no relapses and 22 days passed, got %v", got)
+	}
+}
+
 // Registration day: first 24h do not subtract sleep (daily habit).
 func TestCalcAvgTimeBetween_RegistrationDay_NoSleepSubtract(t *testing.T) {
 	h := habitBase()

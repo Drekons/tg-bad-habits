@@ -130,6 +130,17 @@ func backKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	return kb
 }
 
+// statsToMainKeyboard — выход из экранов статистики на главную (уникальный текст кнопки).
+func statsToMainKeyboard() tgbotapi.ReplyKeyboardMarkup {
+	kb := tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("🏠 На основной экран"),
+		),
+	)
+	kb.ResizeKeyboard = true
+	return kb
+}
+
 // statsHabitKeyboard builds the per-habit stats selection keyboard.
 func statsHabitKeyboard(habits []models.Habit) tgbotapi.ReplyKeyboardMarkup {
 	var rows [][]tgbotapi.KeyboardButton
@@ -139,7 +150,7 @@ func statsHabitKeyboard(habits []models.Habit) tgbotapi.ReplyKeyboardMarkup {
 		))
 	}
 	rows = append(rows, tgbotapi.NewKeyboardButtonRow(
-		tgbotapi.NewKeyboardButton("◀️ Назад"),
+		tgbotapi.NewKeyboardButton("🏠 На основной экран"),
 	))
 	kb := tgbotapi.NewReplyKeyboard(rows...)
 	kb.ResizeKeyboard = true

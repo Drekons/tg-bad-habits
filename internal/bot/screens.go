@@ -25,7 +25,7 @@ func RenderMainScreen(habits []models.Habit, stats []service.HabitStats) string 
 		st := stats[i]
 		timeSince := time.Since(h.LastRelapseAt)
 		balanceTrend := trendIcon(st.BalanceTrend.Delta > 0, math.Abs(st.BalanceTrend.Delta), "₽")
-		timeTrend := trendIcon(st.AvgTimeTrend.Delta > 0, math.Abs(st.AvgTimeTrend.Delta), "ч")
+		timeTrend := trendIconDuration(st.AvgTimeTrend.Delta > 0, math.Abs(st.AvgTimeTrend.Delta))
 		sb.WriteString(fmt.Sprintf("*%s* - %s\n", escapeMarkdown(h.Name), formatDuration(timeSince)))
 		sb.WriteString(fmt.Sprintf("🕐 Последний: %s\n", h.LastRelapseAt.Format(dateTimeLayout)))
 		sb.WriteString(fmt.Sprintf("💰 Баланс: %s₽ %s\n", formatMoney(st.Balance), balanceTrend))
@@ -53,7 +53,7 @@ func RenderStatsScreen(h models.Habit, st service.HabitStats, last20 []models.Re
 	sb.WriteString(fmt.Sprintf("📈 Среднее за %s: *%.2f*\n", h.AvgRelapsesPeriod.Label(), st.AvgPerPeriod))
 
 	// Avg time between relapses - positive trend if time INCREASED (less frequent relapses)
-	timeTrend := trendIcon(st.AvgTimeTrend.Delta > 0, math.Abs(st.AvgTimeTrend.Delta), "ч")
+	timeTrend := trendIconDuration(st.AvgTimeTrend.Delta > 0, math.Abs(st.AvgTimeTrend.Delta))
 	sb.WriteString(fmt.Sprintf("⏱ Среднее между срывами: *%s* %s\n\n", formatDuration(st.AvgTimeBetween), timeTrend))
 
 	// Last 20 relapses
@@ -84,7 +84,23 @@ func trendIcon(better bool, delta float64, unit string) string {
 		return fmt.Sprintf("%s <0.01%s", icon, unit)
 	}
 
-	return fmt.Sprintf("%s%.2f%s", icon, delta, unit)
+	return fmt.Sprintf("%s %.2f%s", icon, delta, unit)
+}
+
+// trendIconDuration returns arrow + delta formatted as duration (e.g. "↑ 6м", "↓ 1ч 30м").
+func trendIconDuration(better bool, deltaHours float64) string {
+	if deltaHours == 0 {
+		return ""
+	}
+	d := time.Duration(deltaHours * float64(time.Hour))
+	if d < time.Minute && d > 0 {
+		d = time.Minute
+	}
+	icon := "↓"
+	if better {
+		icon = "↑"
+	}
+	return icon + " " + formatDuration(d)
 }
 
 // formatMoney formats a float as a readable money string.

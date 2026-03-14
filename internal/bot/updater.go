@@ -2,6 +2,7 @@ package bot
 
 import (
 	"log"
+	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -52,6 +53,11 @@ func (u *Updater) refresh() {
 		log.Printf("Updater GetUsersWithMainMessage: %v", err)
 		return
 	}
+	if len(users) == 0 {
+		log.Printf("Updater: 0 users with main_message_id in DB (автообновление не сработает до открытия главной без «На основной экран»)")
+		return
+	}
+	log.Printf("Updater: refreshing %d user(s)", len(users))
 	now := time.Now()
 	for _, m := range users {
 		habits, err := u.habitRepo.GetByUserID(m.UserID)
@@ -70,12 +76,30 @@ func (u *Updater) refresh() {
 
 		text := RenderMainScreen(habits, statsSlice)
 
-		edit := tgbotapi.NewEditMessageText(m.ChatID, m.MessageID, text)
-		edit.ParseMode = tgbotapi.ModeMarkdown
+		// Сообщение с Reply Keyboard нельзя редактировать — удаляем и отправляем заново. Request() вместо Send(),
+		// т.к. Telegram возвращает для deleteMessage только true, а Send() пытается разобрать ответ как Message и падает с json unmarshal.
+		if _, err := u.bot.Request(tgbotapi.NewDeleteMessage(m.ChatID, m.MessageID)); err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "message to delete not found") {
+				_ = u.userRepo.ClearMainMessage(m.UserID)
+			} else {
+				log.Printf("Updater delete [user=%d]: %v", m.UserID, err)
+			}
+			continue
+		}
 
-		if _, err := u.bot.Send(edit); err != nil {
-			log.Printf("Updater edit [user=%d]: %v", m.UserID, err)
+		msg := tgbotapi.NewMessage(m.ChatID, text)
+		msg.ParseMode = tgbotapi.ModeMarkdown
+		msg.ReplyMarkup = mainKeyboard(habits)
+		msg.DisableNotification = true
+		sent, err := u.bot.Send(msg)
+		if err != nil {
+			log.Printf("Updater send [user=%d]: %v", m.UserID, err)
 			_ = u.userRepo.ClearMainMessage(m.UserID)
+			continue
+		}
+
+		if err := u.userRepo.UpdateMainMessage(m.UserID, m.ChatID, sent.MessageID); err != nil {
+			log.Printf("Updater UpdateMainMessage [user=%d]: %v", m.UserID, err)
 		}
 	}
 }

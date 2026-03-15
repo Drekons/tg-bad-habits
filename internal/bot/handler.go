@@ -76,16 +76,7 @@ func (h *Handler) Handle(update tgbotapi.Update) {
 		case "✅ Да":
 			h.handleRelapseConfirmed(msg)
 		case "❌ Нет":
-			returnID := h.states.GetReturnAfterRelapse(userID)
-			h.states.SetReturnAfterRelapse(userID, 0)
-			h.states.SetState(userID, StateIdle)
-			// Сообщение с removeKeyboard убирает кнопки Да/Нет перед показом следующего экрана.
-			h.send(msg.Chat.ID, "Отменено.", removeKeyboard())
-			if returnID != 0 {
-				h.showHabitMenu(msg.Chat.ID, userID, returnID)
-			} else {
-				h.showMain(msg.Chat.ID, userID)
-			}
+			h.handleRelapseDeclined(msg)
 		default:
 			h.send(msg.Chat.ID, "Пожалуйста, используйте кнопки ниже.", confirmRelapseKeyboard())
 		}
@@ -349,19 +340,34 @@ func (h *Handler) showHabitStatsByID(chatID int64, userID int64, habitID int64) 
 
 // ─── Relapse flow ─────────────────────────────────────────────────────────────
 
+func (h *Handler) handleRelapseDeclined(msg *tgbotapi.Message) {
+	userID := msg.From.ID
+	chatID := msg.Chat.ID
+	returnID := h.states.GetReturnAfterRelapse(userID)
+	h.states.SetReturnAfterRelapse(userID, 0)
+	h.states.SetState(userID, StateIdle)
+	h.send(chatID, "Отменено.", removeKeyboard())
+	if returnID != 0 {
+		h.showHabitMenu(chatID, userID, returnID)
+	} else {
+		h.showMain(chatID, userID)
+	}
+}
+
 func (h *Handler) handleRelapseConfirmed(msg *tgbotapi.Message) {
 	userID := msg.From.ID
+	chatID := msg.Chat.ID
 	habitID := h.states.GetPendingHabit(userID)
 
 	if err := h.habitSvc.RegisterRelapse(habitID); err != nil {
 		log.Printf("RegisterRelapse: %v", err)
-		h.send(msg.Chat.ID, "Ошибка при регистрации срыва. Попробуйте снова.", confirmRelapseKeyboard())
+		h.send(chatID, "Ошибка при регистрации срыва. Попробуйте снова.", confirmRelapseKeyboard())
 		return
 	}
 
 	h.states.SetReturnAfterRelapse(userID, 0)
-	h.send(msg.Chat.ID, "✅ Срыв зарегистрирован.", nil)
-	h.showMain(msg.Chat.ID, userID) // по ТЗ после «Да» всегда на главную
+	h.send(chatID, "✅ Срыв зарегистрирован.", removeKeyboard())
+	h.showMain(chatID, userID) // по ТЗ после «Да» всегда на главную
 }
 
 // ─── Habit creation flow ──────────────────────────────────────────────────────

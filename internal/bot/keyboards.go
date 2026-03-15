@@ -1,8 +1,10 @@
 package bot
 
 import (
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"strconv"
+
 	"github.com/drek/tg-bad-habbits/internal/models"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 // removeKeyboard returns a markup that forces the client to hide the custom keyboard.
@@ -31,30 +33,47 @@ func createFirstHabitKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	)
 }
 
-// mainKeyboard builds the main screen keyboard dynamically from user habits.
-func mainKeyboard(habits []models.Habit) tgbotapi.ReplyKeyboardMarkup {
-	var rows [][]tgbotapi.KeyboardButton
-
-	// One button per habit (max 2 per row for readability)
-	for i := 0; i < len(habits); i += 2 {
-		row := []tgbotapi.KeyboardButton{
-			tgbotapi.NewKeyboardButton(habits[i].Name),
-		}
-		if i+1 < len(habits) {
-			row = append(row, tgbotapi.NewKeyboardButton(habits[i+1].Name))
-		}
-		rows = append(rows, row)
+// mainInlineKeyboard builds the main screen inline keyboard: per habit [💥 Срыв | 📋 Меню], bottom [Меню].
+func mainInlineKeyboard(habits []models.Habit) *tgbotapi.InlineKeyboardMarkup {
+	var rows [][]tgbotapi.InlineKeyboardButton
+	for _, h := range habits {
+		relapseData := "relapse:" + strconv.FormatInt(h.ID, 10)
+		menuData := "habit_menu:" + strconv.FormatInt(h.ID, 10)
+		rows = append(rows, []tgbotapi.InlineKeyboardButton{
+			tgbotapi.NewInlineKeyboardButtonData("💥 Срыв", relapseData),
+			tgbotapi.NewInlineKeyboardButtonData(h.Name, menuData),
+		})
 	}
+	rows = append(rows, []tgbotapi.InlineKeyboardButton{
+		tgbotapi.NewInlineKeyboardButtonData("Меню", "main_menu"),
+	})
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	return &kb
+}
 
-	// Action buttons
-	rows = append(rows,
+// mainMenuReplyKeyboard — Reply для экрана «Выберите действие» (по callback main_menu).
+func mainMenuReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
+	kb := tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("📊 Статистика"),
 			tgbotapi.NewKeyboardButton("➕ Добавить привычку"),
+			tgbotapi.NewKeyboardButton("🏠 Перейти на главную"),
 		),
 	)
+	kb.ResizeKeyboard = true
+	return kb
+}
 
-	kb := tgbotapi.NewReplyKeyboard(rows...)
+// habitMenuReplyKeyboard — Reply для экрана меню привычки: Срыв, Статистика, Назад.
+func habitMenuReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
+	kb := tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("💥 Срыв"),
+			tgbotapi.NewKeyboardButton("📊 Статистика"),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("◀️ Назад"),
+		),
+	)
 	kb.ResizeKeyboard = true
 	return kb
 }
@@ -108,17 +127,6 @@ func defaultHabitNamesKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	return kb
 }
 
-// afterHabitCreatedKeyboard shows the "Go to main" button.
-func afterHabitCreatedKeyboard() tgbotapi.ReplyKeyboardMarkup {
-	kb := tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("🏠 Перейти на главную"),
-		),
-	)
-	kb.ResizeKeyboard = true
-	return kb
-}
-
 // backKeyboard shows just a Back button.
 func backKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	kb := tgbotapi.NewReplyKeyboard(
@@ -126,33 +134,6 @@ func backKeyboard() tgbotapi.ReplyKeyboardMarkup {
 			tgbotapi.NewKeyboardButton("◀️ Назад"),
 		),
 	)
-	kb.ResizeKeyboard = true
-	return kb
-}
-
-// statsToMainKeyboard — выход из экранов статистики на главную (уникальный текст кнопки).
-func statsToMainKeyboard() tgbotapi.ReplyKeyboardMarkup {
-	kb := tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("🏠 На основной экран"),
-		),
-	)
-	kb.ResizeKeyboard = true
-	return kb
-}
-
-// statsHabitKeyboard builds the per-habit stats selection keyboard.
-func statsHabitKeyboard(habits []models.Habit) tgbotapi.ReplyKeyboardMarkup {
-	var rows [][]tgbotapi.KeyboardButton
-	for _, h := range habits {
-		rows = append(rows, tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("📊 "+h.Name),
-		))
-	}
-	rows = append(rows, tgbotapi.NewKeyboardButtonRow(
-		tgbotapi.NewKeyboardButton("🏠 На основной экран"),
-	))
-	kb := tgbotapi.NewReplyKeyboard(rows...)
 	kb.ResizeKeyboard = true
 	return kb
 }

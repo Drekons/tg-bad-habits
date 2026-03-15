@@ -18,16 +18,19 @@ const (
 	StateHabitCost                  // step 3: entering cost per relapse
 	StateHabitAvgCount              // step 4: entering avg relapses count
 	StateHabitAvgPeriod             // step 5: choosing period (reply buttons)
-	StateViewingHabitStats          // viewing stats for one habit; Back → habit list
-	StateViewingStatsList           // viewing "choose habit for stats"; Back → main
+	StateViewingHabitStats          // viewing stats for one habit; Back → habit menu
+	StateViewingHabitMenu           // viewing habit menu (Срыв / Статистика / Назад)
 )
 
 // session stores per-user FSM data.
 type session struct {
-	State           State
-	HabitDraft      habitDraft  // used during habit creation steps
-	PendingHabitID  int64       // habit ID awaiting relapse confirmation
-	MainMessageID   int         // message ID of the main screen (for edits)
+	State             State
+	HabitDraft        habitDraft // used during habit creation steps
+	PendingHabitID    int64      // habit ID awaiting relapse confirmation
+	MainMessageID     int        // message ID of the main screen (for edits)
+	ViewingHabitID    int64      // habit ID when in habit menu or habit stats (for Back)
+	ReturnAfterRelapse int64     // 0 = return to main after confirm; >0 = habitID of habit menu
+	MenuMessageID     int        // message ID of "Выберите действие" (habit or main menu) for delete on Back
 }
 
 // habitDraft accumulates user inputs during the habit creation flow.
@@ -95,6 +98,30 @@ func (sm *StateManager) SetMainMessageID(userID int64, msgID int) {
 
 func (sm *StateManager) GetMainMessageID(userID int64) int {
 	return sm.get(userID).MainMessageID
+}
+
+func (sm *StateManager) SetViewingHabitID(userID int64, habitID int64) {
+	sm.get(userID).ViewingHabitID = habitID
+}
+
+func (sm *StateManager) GetViewingHabitID(userID int64) int64 {
+	return sm.get(userID).ViewingHabitID
+}
+
+func (sm *StateManager) SetReturnAfterRelapse(userID int64, habitID int64) {
+	sm.get(userID).ReturnAfterRelapse = habitID
+}
+
+func (sm *StateManager) GetReturnAfterRelapse(userID int64) int64 {
+	return sm.get(userID).ReturnAfterRelapse
+}
+
+func (sm *StateManager) SetMenuMessageID(userID int64, msgID int) {
+	sm.get(userID).MenuMessageID = msgID
+}
+
+func (sm *StateManager) GetMenuMessageID(userID int64) int {
+	return sm.get(userID).MenuMessageID
 }
 
 // ActiveMainUsers returns userIDs of users currently on the main screen with a tracked message.

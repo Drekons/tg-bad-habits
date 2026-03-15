@@ -17,11 +17,12 @@ type TrendData struct {
 
 // HabitStats holds all calculated statistics for a single habit.
 type HabitStats struct {
-	Balance        float64
-	BalanceTrend   TrendData
-	AvgTimeBetween time.Duration
-	AvgTimeTrend   TrendData
-	AvgPerPeriod   float64 // real average relapses per habit's period
+	Balance          float64
+	BalanceTrend     TrendData
+	AvgTimeBetween   time.Duration
+	AvgTimeTrend     TrendData
+	AvgPerPeriod     float64 // real average relapses per habit's period
+	RelapsesInPeriod int     // count of relapses in current period (day/month/...) for habit
 }
 
 // StatsService computes all statistics from raw data.
@@ -66,7 +67,36 @@ func (s *StatsService) Calc(habit models.Habit, relapses []models.Relapse, now t
 			Delta:    avgTimeDelta.Hours(),
 			Up:       avgTimeDelta > 0,
 		},
-		AvgPerPeriod: calcAvgPerPeriod(habit, relapses, now),
+		AvgPerPeriod:     calcAvgPerPeriod(habit, relapses, now),
+		RelapsesInPeriod: countRelapsesInPeriod(habit, relapses, now),
+	}
+}
+
+// countRelapsesInPeriod returns the number of relapses in the current period for the habit.
+// Day = from 00:00 today; month = current calendar month; 3m/6m/year = last 90/180/365 days.
+func countRelapsesInPeriod(habit models.Habit, relapses []models.Relapse, now time.Time) int {
+	start := periodStart(habit.AvgRelapsesPeriod, now)
+	var n int
+	for _, r := range relapses {
+		if !r.RelapsedAt.Before(start) && !r.RelapsedAt.After(now) {
+			n++
+		}
+	}
+	return n
+}
+
+func periodStart(period models.AvgPeriod, now time.Time) time.Time {
+	loc := now.Location()
+	switch period {
+	case models.PeriodDay:
+		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	case models.PeriodMonth:
+		return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
+	case models.Period3Month, models.Period6Month, models.PeriodYear:
+		days := int(period.Days())
+		return now.AddDate(0, 0, -days)
+	default:
+		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 	}
 }
 

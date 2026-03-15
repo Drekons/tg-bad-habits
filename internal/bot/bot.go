@@ -55,6 +55,12 @@ func (b *Bot) Run() {
 	log.Println("Bot is running...")
 
 	for update := range updates {
-		go b.handler.Handle(update)
+		if update.CallbackQuery != nil {
+			go b.handler.HandleCallbackQuery(update.CallbackQuery)
+			continue
+		}
+		if update.Message != nil {
+			go b.handler.Handle(update)
+		}
 	}
 }

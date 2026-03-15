@@ -75,31 +75,23 @@ func (u *Updater) refresh() {
 		}
 
 		text := RenderMainScreen(habits, statsSlice)
+		inlineKb := mainInlineKeyboard(habits)
 
-		// Сообщение с Reply Keyboard нельзя редактировать — удаляем и отправляем заново. Request() вместо Send(),
-		// т.к. Telegram возвращает для deleteMessage только true, а Send() пытается разобрать ответ как Message и падает с json unmarshal.
-		if _, err := u.bot.Request(tgbotapi.NewDeleteMessage(m.ChatID, m.MessageID)); err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "message to delete not found") {
+		editMsg := tgbotapi.NewEditMessageText(m.ChatID, m.MessageID, text)
+		editMsg.ParseMode = tgbotapi.ModeMarkdown
+		if _, err := u.bot.Send(editMsg); err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "message to edit not found") ||
+				strings.Contains(strings.ToLower(err.Error()), "message is not modified") {
 				_ = u.userRepo.ClearMainMessage(m.UserID)
 			} else {
-				log.Printf("Updater delete [user=%d]: %v", m.UserID, err)
+				log.Printf("Updater EditMessageText [user=%d]: %v", m.UserID, err)
 			}
 			continue
 		}
 
-		msg := tgbotapi.NewMessage(m.ChatID, text)
-		msg.ParseMode = tgbotapi.ModeMarkdown
-		msg.ReplyMarkup = mainKeyboard(habits)
-		msg.DisableNotification = true
-		sent, err := u.bot.Send(msg)
-		if err != nil {
-			log.Printf("Updater send [user=%d]: %v", m.UserID, err)
-			_ = u.userRepo.ClearMainMessage(m.UserID)
-			continue
-		}
-
-		if err := u.userRepo.UpdateMainMessage(m.UserID, m.ChatID, sent.MessageID); err != nil {
-			log.Printf("Updater UpdateMainMessage [user=%d]: %v", m.UserID, err)
+		editMarkup := tgbotapi.NewEditMessageReplyMarkup(m.ChatID, m.MessageID, *inlineKb)
+		if _, err := u.bot.Send(editMarkup); err != nil {
+			log.Printf("Updater EditMessageReplyMarkup [user=%d]: %v", m.UserID, err)
 		}
 	}
 }

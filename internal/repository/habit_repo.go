@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -15,6 +17,24 @@ type HabitRepo struct {
 
 func NewHabitRepo(db *sqlx.DB) *HabitRepo {
 	return &HabitRepo{db: db}
+}
+
+// GetByID returns a habit by ID. Caller must verify habit.UserID == userID if needed.
+func (r *HabitRepo) GetByID(habitID int64) (*models.Habit, error) {
+	var h models.Habit
+	err := r.db.Get(&h,
+		`SELECT id, user_id, name, origin_at, last_relapse_at,
+		        cost_per_relapse, avg_relapses_count, avg_relapses_period, created_at
+		 FROM habits WHERE id = ?`,
+		habitID,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("HabitRepo.GetByID: %w", err)
+	}
+	return &h, nil
 }
 
 // GetByUserID returns all habits for a user.

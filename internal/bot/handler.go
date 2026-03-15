@@ -76,8 +76,16 @@ func (h *Handler) Handle(update tgbotapi.Update) {
 		case "✅ Да":
 			h.handleRelapseConfirmed(msg)
 		case "❌ Нет":
+			returnID := h.states.GetReturnAfterRelapse(userID)
+			h.states.SetReturnAfterRelapse(userID, 0)
 			h.states.SetState(userID, StateIdle)
-			h.showMain(msg.Chat.ID, userID) // сброс клавиатуры и главный экран, иначе кнопки не переключаются
+			// Сообщение с removeKeyboard убирает кнопки Да/Нет перед показом следующего экрана.
+			h.send(msg.Chat.ID, "Отменено.", removeKeyboard())
+			if returnID != 0 {
+				h.showHabitMenu(msg.Chat.ID, userID, returnID)
+			} else {
+				h.showMain(msg.Chat.ID, userID)
+			}
 		default:
 			h.send(msg.Chat.ID, "Пожалуйста, используйте кнопки ниже.", confirmRelapseKeyboard())
 		}
@@ -85,8 +93,53 @@ func (h *Handler) Handle(update tgbotapi.Update) {
 	case StateHabitName, StateHabitLastRelapse, StateHabitCost, StateHabitAvgCount, StateHabitAvgPeriod:
 		h.handleHabitCreationStep(msg, state)
 
+	case StateViewingHabitMenu, StateViewingHabitStats:
+		h.handleMainMenu(msg)
+
 	default: // StateIdle
 		h.handleMainMenu(msg)
+	}
+}
+
+// HandleCallbackQuery handles inline button callbacks.
+func (h *Handler) HandleCallbackQuery(cq *tgbotapi.CallbackQuery) {
+	userID := cq.From.ID
+	chatID := cq.Message.Chat.ID
+	data := cq.Data
+
+	// Answer callback so Telegram removes loading state
+	if _, err := h.bot.Request(tgbotapi.NewCallback(cq.ID, "")); err != nil {
+		log.Printf("HandleCallbackQuery Answer: %v", err)
+	}
+
+	switch {
+	case data == "main_menu":
+		h.showMainMenuScreen(chatID, userID)
+
+	case strings.HasPrefix(data, "habit_menu:"):
+		idStr := strings.TrimPrefix(data, "habit_menu:")
+		habitID, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			return
+		}
+		habit, getErr := h.habitRepo.GetByID(habitID)
+		if getErr != nil || habit == nil || habit.UserID != userID {
+			return
+		}
+		h.showHabitMenu(chatID, userID, habitID)
+
+	case strings.HasPrefix(data, "relapse:"):
+		idStr := strings.TrimPrefix(data, "relapse:")
+		habitID, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			return
+		}
+		habit, getErr := h.habitRepo.GetByID(habitID)
+		if getErr != nil || habit == nil || habit.UserID != userID {
+			return
+		}
+		h.states.SetReturnAfterRelapse(userID, 0) // return to main after confirm
+		h.askConfirmRelapseByID(chatID, userID, habitID)
 	}
 }
 
@@ -140,60 +193,81 @@ func (h *Handler) handleMainMenu(msg *tgbotapi.Message) {
 	userID := msg.From.ID
 	text := strings.TrimSpace(msg.Text)
 	state := h.states.GetState(userID)
+	chatID := msg.Chat.ID
 
-	// From single-habit stats screen only "Back" is valid; anything else returns to habit list
-	if state == StateViewingHabitStats && text != "◀️ Назад" {
-		h.states.SetState(userID, StateIdle)
-		h.showStatsHabitList(msg)
+	// Меню привычки: Срыв / Статистика / Назад
+	if state == StateViewingHabitMenu {
+		habitID := h.states.GetViewingHabitID(userID)
+		switch text {
+		case "💥 Срыв":
+			h.states.SetReturnAfterRelapse(userID, habitID)
+			h.askConfirmRelapseByID(chatID, userID, habitID)
+		case "📊 Статистика":
+			h.showHabitStatsByID(chatID, userID, habitID)
+		case "◀️ Назад", "Назад":
+			h.returnFromHabitMenuToMain(chatID, userID)
+		default:
+			h.send(chatID, "Используйте кнопки ниже.", habitMenuReplyKeyboard())
+		}
 		return
 	}
 
+	// Статистика по привычке: Назад → меню привычки
+	if state == StateViewingHabitStats {
+		if text == "◀️ Назад" || strings.Contains(text, "Назад") {
+			h.showHabitMenu(chatID, userID, h.states.GetViewingHabitID(userID))
+		} else {
+			h.showHabitMenu(chatID, userID, h.states.GetViewingHabitID(userID))
+		}
+		return
+	}
+
+	// StateIdle: главное меню (после callback «Меню» или с главного экрана)
 	switch {
 	case text == "➕ Добавить привычку" || text == "➕ Создать первую вредную привычку":
 		h.startHabitCreation(msg)
 
-	case text == "📊 Статистика":
-		h.showStatsHabitList(msg)
-
 	case text == "🏠 Перейти на главную":
-		h.showMain(msg.Chat.ID, userID)
+		h.deleteMenuMessageIfSet(chatID, userID)
+		h.showMain(chatID, userID)
 
 	case text == "🏠 На основной экран" || strings.Contains(text, "На основной экран"):
 		h.states.SetState(userID, StateIdle)
-		h.showMain(msg.Chat.ID, userID)
-
-	case text == "◀️ Назад" || strings.Contains(text, "Назад"):
-		if state == StateViewingHabitStats {
-			h.states.SetState(userID, StateIdle)
-			h.showStatsHabitList(msg)
-		} else {
-			// Всегда одно сообщение с клавиатурой при Назад — иначе клиент может не переключить кнопки
-			h.states.SetState(userID, StateIdle)
-			h.showMain(msg.Chat.ID, userID)
-		}
-
-	case strings.HasPrefix(text, "📊 "):
-		// Select specific habit for stats
-		habitName := strings.TrimPrefix(text, "📊 ")
-		h.showHabitStats(msg, habitName)
+		h.deleteMenuMessageIfSet(chatID, userID)
+		h.showMain(chatID, userID)
 
 	default:
-		// Check if it's a habit name button for relapse
-		habits, _ := h.habitRepo.GetByUserID(userID)
-		for _, habit := range habits {
-			if text == habit.Name {
-				h.askConfirmRelapse(msg, habit.Name)
-				return
-			}
-		}
-		h.showMain(msg.Chat.ID, userID)
+		h.deleteMenuMessageIfSet(chatID, userID)
+		h.showMain(chatID, userID)
+	}
+}
+
+func (h *Handler) returnFromHabitMenuToMain(chatID int64, userID int64) {
+	mid := h.states.GetMenuMessageID(userID)
+	if mid != 0 {
+		_, _ = h.bot.Request(tgbotapi.NewDeleteMessage(chatID, mid))
+		h.states.SetMenuMessageID(userID, 0)
+	}
+	oldMainID := h.states.GetMainMessageID(userID)
+	if oldMainID != 0 {
+		_, _ = h.bot.Request(tgbotapi.NewDeleteMessage(chatID, oldMainID))
+	}
+	h.states.SetState(userID, StateIdle)
+	h.showMain(chatID, userID)
+}
+
+func (h *Handler) deleteMenuMessageIfSet(chatID int64, userID int64) {
+	mid := h.states.GetMenuMessageID(userID)
+	if mid != 0 {
+		_, _ = h.bot.Request(tgbotapi.NewDeleteMessage(chatID, mid))
+		h.states.SetMenuMessageID(userID, 0)
 	}
 }
 
 // ─── Main screen ─────────────────────────────────────────────────────────────
 
-// showMain показывает главный экран: одно сообщение с текстом и главной клавиатурой.
-// Его ID сохраняем для автообновления (Updater удаляет и отправляет сообщение заново, т.к. edit с Reply Keyboard невозможен).
+// showMain показывает главный экран: одно сообщение с текстом и только inline-клавиатурой (без Reply).
+// ID сохраняем для автообновления через EditMessageText/EditMessageReplyMarkup в Updater.
 func (h *Handler) showMain(chatID int64, userID int64) {
 	habits, err := h.habitRepo.GetByUserID(userID)
 	if err != nil {
@@ -211,11 +285,8 @@ func (h *Handler) showMain(chatID int64, userID int64) {
 	text := RenderMainScreen(habits, statsSlice)
 	h.states.SetState(userID, StateIdle)
 
-	mainKb := mainKeyboard(habits)
-
-	// Одно сообщение: текст + главная клавиатура. Так клавиатура при возврате на главную всегда обновляется на клиенте.
-	// Редактировать сообщения с Reply Keyboard нельзя — автообновление делаем в Updater через удаление и повторную отправку.
-	sent, err := h.sendMarkdown(chatID, text, mainKb)
+	inlineKb := mainInlineKeyboard(habits)
+	sent, err := h.sendMarkdown(chatID, text, inlineKb)
 	if err != nil {
 		log.Printf("showMain send: %v", err)
 		return
@@ -227,76 +298,56 @@ func (h *Handler) showMain(chatID int64, userID int64) {
 	}
 }
 
-// ─── Stats screens ────────────────────────────────────────────────────────────
-
-func (h *Handler) showStatsHabitList(msg *tgbotapi.Message) {
-	userID := msg.From.ID
-	_ = h.userRepo.ClearMainMessage(userID) // автообновление только на главном экране
-	habits, err := h.habitRepo.GetByUserID(userID)
-	if err != nil || len(habits) == 0 {
-		h.states.SetState(userID, StateIdle)
-		h.send(msg.Chat.ID, "Нет привычек для отображения.", statsToMainKeyboard())
-		return
-	}
-	h.states.SetState(userID, StateViewingStatsList)
-	h.send(msg.Chat.ID, "Выберите привычку:", statsHabitKeyboard(habits))
+// showMainMenuScreen отправляет сообщение «Выберите действие» с Reply «Добавить привычку»/«Перейти на главную».
+func (h *Handler) showMainMenuScreen(chatID int64, userID int64) {
+	sent := h.send(chatID, "Выберите действие:", mainMenuReplyKeyboard())
+	h.states.SetMenuMessageID(userID, sent.MessageID)
 }
 
-func (h *Handler) showHabitStats(msg *tgbotapi.Message, habitName string) {
-	userID := msg.From.ID
-	habits, _ := h.habitRepo.GetByUserID(userID)
-
-	var target *models.Habit
-	for i := range habits {
-		if habits[i].Name == habitName {
-			target = &habits[i]
-			break
-		}
-	}
-	if target == nil {
-		h.send(msg.Chat.ID, "Привычка не найдена.", removeKeyboard())
-		h.showMain(msg.Chat.ID, userID)
-		return
-	}
-
-	relapses, _ := h.relapseRepo.GetByHabitID(target.ID)
-	last20, _ := h.relapseRepo.GetLast20ByHabitID(target.ID)
-	st := h.statsSvc.Calc(*target, relapses, time.Now())
-	text := RenderStatsScreen(*target, st, last20)
-
-	h.states.SetState(userID, StateViewingHabitStats)
-	_, err := h.sendMarkdown(msg.Chat.ID, text, backKeyboard()) // Назад → к списку привычек
-	if err != nil {
-		log.Printf("showHabitStats: %v", err)
-	}
+// showHabitMenu отправляет сообщение «Выберите действие» с Reply Срыв/Статистика/Назад, сохраняет ViewingHabitID и MenuMessageID.
+func (h *Handler) showHabitMenu(chatID int64, userID int64, habitID int64) {
+	h.states.SetState(userID, StateViewingHabitMenu)
+	h.states.SetViewingHabitID(userID, habitID)
+	sent := h.send(chatID, "Выберите действие:", habitMenuReplyKeyboard())
+	h.states.SetMenuMessageID(userID, sent.MessageID)
 }
 
-// ─── Relapse flow ─────────────────────────────────────────────────────────────
-
-func (h *Handler) askConfirmRelapse(msg *tgbotapi.Message, habitName string) {
-	userID := msg.From.ID
-	_ = h.userRepo.ClearMainMessage(userID) // автообновление только на главном экране
-	habits, _ := h.habitRepo.GetByUserID(userID)
-
-	var target *models.Habit
-	for i := range habits {
-		if habits[i].Name == habitName {
-			target = &habits[i]
-			break
-		}
-	}
-	if target == nil {
-		h.showMain(msg.Chat.ID, userID)
+// askConfirmRelapseByID показывает экран подтверждения срыва по habitID, задаёт ReturnAfterRelapse.
+func (h *Handler) askConfirmRelapseByID(chatID int64, userID int64, habitID int64) {
+	habit, err := h.habitRepo.GetByID(habitID)
+	if err != nil || habit == nil || habit.UserID != userID {
+		h.showMain(chatID, userID)
 		return
 	}
-
+	_ = h.userRepo.ClearMainMessage(userID)
 	h.states.SetState(userID, StateWaitConfirmRelapse)
-	h.states.SetPendingHabit(userID, target.ID)
-	h.send(msg.Chat.ID,
-		fmt.Sprintf("Зарегистрировать срыв по привычке *%s*?", escapeMarkdown(target.Name)),
+	h.states.SetPendingHabit(userID, habitID)
+	h.send(chatID,
+		fmt.Sprintf("Зарегистрировать срыв по привычке *%s*?", escapeMarkdown(habit.Name)),
 		confirmRelapseKeyboard(),
 	)
 }
+
+// ─── Stats screens ────────────────────────────────────────────────────────────
+
+func (h *Handler) showHabitStatsByID(chatID int64, userID int64, habitID int64) {
+	habit, err := h.habitRepo.GetByID(habitID)
+	if err != nil || habit == nil || habit.UserID != userID {
+		h.showMain(chatID, userID)
+		return
+	}
+
+	relapses, _ := h.relapseRepo.GetByHabitID(habit.ID)
+	last20, _ := h.relapseRepo.GetLast20ByHabitID(habit.ID)
+	st := h.statsSvc.Calc(*habit, relapses, time.Now())
+	text := RenderStatsScreen(*habit, st, last20)
+
+	h.states.SetState(userID, StateViewingHabitStats)
+	h.states.SetViewingHabitID(userID, habitID)
+	_, _ = h.sendMarkdown(chatID, text, backKeyboard()) // Назад → в меню привычки
+}
+
+// ─── Relapse flow ─────────────────────────────────────────────────────────────
 
 func (h *Handler) handleRelapseConfirmed(msg *tgbotapi.Message) {
 	userID := msg.From.ID
@@ -308,8 +359,9 @@ func (h *Handler) handleRelapseConfirmed(msg *tgbotapi.Message) {
 		return
 	}
 
+	h.states.SetReturnAfterRelapse(userID, 0)
 	h.send(msg.Chat.ID, "✅ Срыв зарегистрирован.", nil)
-	h.showMain(msg.Chat.ID, userID) // сброс клавиатуры и главный экран, иначе кнопки не переключаются
+	h.showMain(msg.Chat.ID, userID) // по ТЗ после «Да» всегда на главную
 }
 
 // ─── Habit creation flow ──────────────────────────────────────────────────────

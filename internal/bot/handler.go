@@ -313,8 +313,19 @@ func (h *Handler) askConfirmRelapseByID(chatID int64, userID int64, habitID int6
 	_ = h.userRepo.ClearMainMessage(userID)
 	h.states.SetState(userID, StateWaitConfirmRelapse)
 	h.states.SetPendingHabit(userID, habitID)
+
+	lastRelapseAt := habit.LastRelapseAt
+	if lastRelapseAt.IsZero() {
+		lastRelapseAt = habit.OriginAt
+	}
+	timeSinceLastRelapse := time.Since(lastRelapseAt)
+
 	h.send(chatID,
-		fmt.Sprintf("Зарегистрировать срыв по привычке *%s*?", escapeMarkdown(habit.Name)),
+		fmt.Sprintf(
+			"Зарегистрировать срыв по привычке *%s*?\nПрошло %s с последнего срыва.",
+			escapeMarkdown(habit.Name),
+			formatDuration(timeSinceLastRelapse),
+		),
 		confirmRelapseKeyboard(),
 	)
 }

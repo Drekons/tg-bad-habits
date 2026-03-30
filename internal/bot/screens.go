@@ -33,7 +33,13 @@ func RenderMainScreen(habits []models.Habit, stats []service.HabitStats) string 
 		sb.WriteString(fmt.Sprintf("*%s* - %s\n", nameLine, formatDuration(timeSince)))
 		sb.WriteString(fmt.Sprintf("🕐 Последний: %s\n", h.LastRelapseAt.Format(dateTimeLayout)))
 		sb.WriteString(fmt.Sprintf("💰 Баланс: %s₽ %s\n", formatMoney(st.Balance), balanceTrend))
-		sb.WriteString(fmt.Sprintf("📈 Среднее за %s: %.2f\n", h.AvgRelapsesPeriod.Label(), st.AvgPerPeriod))
+		if st.AvgPerPeriod != 0 {
+			avgLine := fmt.Sprintf("📈 Среднее за %s: %.2f", h.AvgRelapsesPeriod.Label(), st.AvgPerPeriod)
+			if t := strings.TrimSpace(trendIcon(st.AvgPerPeriodTrend.Delta < 0, math.Abs(st.AvgPerPeriodTrend.Delta), "")); t != "" {
+				avgLine += " " + t
+			}
+			sb.WriteString(avgLine + "\n")
+		}
 		sb.WriteString(fmt.Sprintf("⏱ Среднее время: %s %s\n", formatDuration(st.AvgTimeBetween), timeTrend))
 		sb.WriteString("\n")
 	}
@@ -54,8 +60,12 @@ func RenderStatsScreen(h models.Habit, st service.HabitStats, last20 []models.Re
 	balanceTrend := trendIcon(st.BalanceTrend.Delta > 0, math.Abs(st.BalanceTrend.Delta), "₽")
 	sb.WriteString(fmt.Sprintf("💰 Баланс: *%s₽* %s\n", formatMoney(st.Balance), balanceTrend))
 
-	// Avg per period
-	sb.WriteString(fmt.Sprintf("📈 Среднее за %s: *%.2f*\n", h.AvgRelapsesPeriod.Label(), st.AvgPerPeriod))
+	// Меньше срывов за период лучше (↑ при отрицательной дельте).
+	avgLine := fmt.Sprintf("📈 Среднее за %s: *%.2f*", h.AvgRelapsesPeriod.Label(), st.AvgPerPeriod)
+	if t := strings.TrimSpace(trendIcon(st.AvgPerPeriodTrend.Delta < 0, math.Abs(st.AvgPerPeriodTrend.Delta), "")); t != "" {
+		avgLine += " " + t
+	}
+	sb.WriteString(avgLine + "\n")
 
 	// Avg time between relapses - positive trend if time INCREASED (less frequent relapses)
 	timeTrend := trendIconDuration(st.AvgTimeTrend.Delta > 0, math.Abs(st.AvgTimeTrend.Delta))

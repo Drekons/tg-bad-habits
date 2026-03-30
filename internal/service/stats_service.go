@@ -17,12 +17,13 @@ type TrendData struct {
 
 // HabitStats holds all calculated statistics for a single habit.
 type HabitStats struct {
-	Balance          float64
-	BalanceTrend     TrendData
-	AvgTimeBetween   time.Duration
-	AvgTimeTrend     TrendData
-	AvgPerPeriod     float64 // real average relapses per habit's period
-	RelapsesInPeriod int     // count of relapses in current period (day/month/...) for habit
+	Balance           float64
+	BalanceTrend      TrendData
+	AvgTimeBetween    time.Duration
+	AvgTimeTrend      TrendData
+	AvgPerPeriod      float64 // real average relapses per habit's period
+	AvgPerPeriodTrend TrendData
+	RelapsesInPeriod  int // count of relapses in current period (day/month/...) for habit
 }
 
 // StatsService computes all statistics from raw data.
@@ -52,6 +53,10 @@ func (s *StatsService) Calc(habit models.Habit, relapses []models.Relapse, now t
 		avgTimeDelta = 0
 	}
 
+	avgPerNow := calcAvgPerPeriod(habit, relapses, now)
+	avgPerYesterday := calcAvgPerPeriod(habit, relapsesUntilYesterday, startOfToday)
+	avgPerDelta := avgPerNow - avgPerYesterday
+
 	return HabitStats{
 		Balance: balanceNow,
 		BalanceTrend: TrendData{
@@ -67,7 +72,13 @@ func (s *StatsService) Calc(habit models.Habit, relapses []models.Relapse, now t
 			Delta:    avgTimeDelta.Hours(),
 			Up:       avgTimeDelta > 0,
 		},
-		AvgPerPeriod:     calcAvgPerPeriod(habit, relapses, now),
+		AvgPerPeriod: avgPerNow,
+		AvgPerPeriodTrend: TrendData{
+			Current:  avgPerNow,
+			Previous: avgPerYesterday,
+			Delta:    avgPerDelta,
+			Up:       avgPerDelta > 0, // рост среднего числа срывов — хуже
+		},
 		RelapsesInPeriod: countRelapsesInPeriod(habit, relapses, now),
 	}
 }
@@ -101,8 +112,7 @@ func periodStart(period models.AvgPeriod, now time.Time) time.Time {
 }
 
 // calcBalance computes: potentialLoss(until) - realLoss(relapses).
-// For habits with period "day", uses effective (waking) days: 8h sleep per full day
-// after the registration day is excluded. Registration day is not reduced.
+// For habits with period "day", uses effective (waking) days: see effectiveWakingHours.
 func calcBalance(habit models.Habit, relapses []models.Relapse, until time.Time) float64 {
 	if until.Before(habit.OriginAt) {
 		return 0
@@ -137,19 +147,18 @@ func calcBalance(habit models.Habit, relapses []models.Relapse, until time.Time)
 	return balance
 }
 
-// effectiveWakingHours returns waking hours for a daily habit: total time minus 8h sleep
-// per full 24h day after the first day (registration day is not reduced).
+// effectiveWakingHours returns waking hours for a daily habit: first 24h from origin count
+// fully; after that, each real hour contributes 16/24 waking hours (8h sleep spread smoothly
+// over each day after the registration day).
 func effectiveWakingHours(elapsed time.Duration) float64 {
 	totalHours := elapsed.Hours()
 	if totalHours <= 0 {
 		return 0
 	}
-	fullDays := int(totalHours / 24)
-	sleepingHours := 0.0
-	if fullDays >= 1 {
-		sleepingHours = 8 * float64(fullDays-1)
+	if totalHours <= 24 {
+		return totalHours
 	}
-	return totalHours - sleepingHours
+	return 24 + (totalHours-24)*(16.0/24.0)
 }
 
 // calcAvgTimeBetween computes mean duration of all intervals including the ongoing one up to 'until'.
@@ -170,11 +179,18 @@ func calcAvgTimeBetween(habit models.Habit, relapses []models.Relapse, until tim
 }
 
 // calcAvgPerPeriod computes real average relapses per the habit's period since origin.
+// For period "day", elapsed "days" match balance (effective waking / 16).
 func calcAvgPerPeriod(habit models.Habit, relapses []models.Relapse, now time.Time) float64 {
 	if now.Before(habit.OriginAt) {
 		return 0
 	}
-	totalDays := now.Sub(habit.OriginAt).Hours() / 24
+	elapsed := now.Sub(habit.OriginAt)
+	var totalDays float64
+	if habit.AvgRelapsesPeriod == models.PeriodDay {
+		totalDays = effectiveWakingHours(elapsed) / 16
+	} else {
+		totalDays = elapsed.Hours() / 24
+	}
 	if totalDays <= 0 {
 		return 0
 	}

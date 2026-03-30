@@ -25,7 +25,7 @@ func habitBase() models.Habit {
 
 func TestCalcBalance_NoRelapses(t *testing.T) {
 	h := habitBase()
-	// 10 days later, 0 real relapses. PeriodDay: effective days = (240-8*9)/16 = 10.5
+	// 10 days later, 0 real relapses. PeriodDay: effective waking = 24+216*16/24 = 168h → 168/16 = 10.5 дн.
 	until := h.OriginAt.Add(10 * 24 * time.Hour)
 	// potentialLoss = 2/day * 10.5 effective days * 100₽ = 2100, realLoss = 0, balance = +2100
 	got := calcBalance(h, nil, until)
@@ -105,7 +105,7 @@ func TestCalcBalance_NoRelapses_NonZeroBalance(t *testing.T) {
 func TestCalcAvgTimeBetween_RegistrationDay_NoSleepSubtract(t *testing.T) {
 	h := habitBase()
 	until := h.OriginAt.Add(24 * time.Hour) // exactly 1 day
-	// fullDays=1 → sleeping=0, waking=24h, intervals=1 → avg=24h
+	// Первые 24ч без вычета сна → 24h, intervals=1 → avg=24h
 	got := calcAvgTimeBetween(h, nil, until)
 	if got != 24*time.Hour {
 		t.Errorf("expected 24h on registration day (no sleep subtract), got %v", got)
@@ -121,6 +121,17 @@ func TestCalcAvgTimeBetween_NoRelapses(t *testing.T) {
 	got := calcAvgTimeBetween(h, nil, until)
 	if got != 24*time.Hour {
 		t.Errorf("expected 24h for empty relapses after 1 day, got %v", got)
+	}
+}
+
+// После первых суток сон размазан по часам: 36ч → 24 + 12*(16/24) = 32ч бодрствования.
+func TestCalcAvgTimeBetween_SmoothWakingSecondDay(t *testing.T) {
+	h := habitBase()
+	until := h.OriginAt.Add(36 * time.Hour)
+	got := calcAvgTimeBetween(h, nil, until)
+	want := 32 * time.Hour
+	if got != want {
+		t.Errorf("expected %v effective waking avg interval, got %v", want, got)
 	}
 }
 
@@ -143,7 +154,7 @@ func TestCalcAvgTimeBetween_MultipleRelapses(t *testing.T) {
 		{RelapsedAt: h.OriginAt.Add(24 * time.Hour)}, // day 1
 		{RelapsedAt: h.OriginAt.Add(48 * time.Hour)}, // day 2
 		{RelapsedAt: h.OriginAt.Add(72 * time.Hour)}, // day 3
-	} // 3 relapses. intervals = 4. PeriodDay: waking = 96-8*3 = 72h, avg = 72/4 = 18h
+	} // 3 relapses. intervals = 4. PeriodDay: waking = 24+72*16/24 = 72h, avg = 72/4 = 18h
 	got := calcAvgTimeBetween(h, relapses, until)
 	expected := 18 * time.Hour
 	if got != expected {
@@ -179,7 +190,7 @@ func TestFilterUntil(t *testing.T) {
 	relapses := []models.Relapse{
 		{RelapsedAt: base.Add(-24 * time.Hour)}, // before
 		{RelapsedAt: base.Add(-1 * time.Hour)},  // before
-		{RelapsedAt: base},                       // exactly at cutoff — should be excluded (strict <)
+		{RelapsedAt: base},                      // exactly at cutoff — should be excluded (strict <)
 		{RelapsedAt: base.Add(1 * time.Hour)},   // after
 	}
 	got := filterUntil(relapses, base)
@@ -195,9 +206,9 @@ func TestStatsService_Calc_ZeroRelapses(t *testing.T) {
 	h := habitBase()
 	now := h.OriginAt.Add(48 * time.Hour) // 2 days passed
 
-	// PeriodDay: effective days = (48-8)/16 = 2.5. Potential = 2*2.5*100 = 500. Balance = +500.
+	// PeriodDay: effective = 24+24*16/24 = 40h → 40/16 = 2.5 дн. Potential = 2*2.5*100 = 500.
 	// Avg time: waking 40h, intervals 1 → 40h.
-	// Avg per period: 0/2 = 0.
+	// Avg per period: 0/2.5 = 0.
 
 	got := s.Calc(h, nil, now)
 
@@ -211,4 +222,3 @@ func TestStatsService_Calc_ZeroRelapses(t *testing.T) {
 		t.Errorf("expected avg per period 0, got %v", got.AvgPerPeriod)
 	}
 }
-

@@ -33,15 +33,14 @@ func createFirstHabitKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	)
 }
 
-// mainInlineKeyboard builds the main screen inline keyboard: per habit [💥 Срыв | 📋 Меню], bottom [Меню].
+// mainInlineKeyboard: per habit [💥 Срыв | название→меню], bottom [Меню].
 func mainInlineKeyboard(habits []models.Habit) *tgbotapi.InlineKeyboardMarkup {
 	var rows [][]tgbotapi.InlineKeyboardButton
 	for _, h := range habits {
-		relapseData := "relapse:" + strconv.FormatInt(h.ID, 10)
-		menuData := "habit_menu:" + strconv.FormatInt(h.ID, 10)
+		id := strconv.FormatInt(h.ID, 10)
 		rows = append(rows, []tgbotapi.InlineKeyboardButton{
-			tgbotapi.NewInlineKeyboardButtonData("💥 Срыв", relapseData),
-			tgbotapi.NewInlineKeyboardButtonData(h.Name, menuData),
+			tgbotapi.NewInlineKeyboardButtonData("💥 Срыв", "relapse:"+id+":main"),
+			tgbotapi.NewInlineKeyboardButtonData(h.Name, "habit_menu:"+id),
 		})
 	}
 	rows = append(rows, []tgbotapi.InlineKeyboardButton{
@@ -51,58 +50,57 @@ func mainInlineKeyboard(habits []models.Habit) *tgbotapi.InlineKeyboardMarkup {
 	return &kb
 }
 
-// mainMenuReplyKeyboard — Reply для экрана «Выберите действие» (по callback main_menu).
-func mainMenuReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
-	kb := tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("➕ Добавить привычку"),
-			tgbotapi.NewKeyboardButton("🏠 Перейти на главную"),
-		),
-	)
-	kb.ResizeKeyboard = true
-	return kb
-}
-
-// habitMenuReplyKeyboard — legacy Reply (на случай старых сообщений).
-func habitMenuReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
-	kb := tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("💥 Срыв"),
-			tgbotapi.NewKeyboardButton("📊 Статистика"),
-		),
-		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("◀️ Назад"),
-		),
-	)
-	kb.ResizeKeyboard = true
-	return kb
-}
-
-// habitMenuInlineKeyboard — меню привычки с habitID в callback (не зависит от in-memory state).
-func habitMenuInlineKeyboard(habitID int64) *tgbotapi.InlineKeyboardMarkup {
-	id := strconv.FormatInt(habitID, 10)
+// mainMenuInlineKeyboard — меню без Reply (callback’и не зависят от FSM).
+func mainMenuInlineKeyboard() *tgbotapi.InlineKeyboardMarkup {
 	kb := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("💥 Срыв", "relapse:"+id),
-			tgbotapi.NewInlineKeyboardButtonData("📊 Статистика", "habit_stats:"+id),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("◀️ Назад", "habit_back"),
+			tgbotapi.NewInlineKeyboardButtonData("➕ Добавить привычку", "add_habit"),
+			tgbotapi.NewInlineKeyboardButtonData("🏠 На главную", "go_main"),
 		),
 	)
 	return &kb
 }
 
-// confirmRelapseKeyboard shows Yes/No for relapse confirmation.
-func confirmRelapseKeyboard() tgbotapi.ReplyKeyboardMarkup {
-	kb := tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("✅ Да"),
-			tgbotapi.NewKeyboardButton("❌ Нет"),
+// habitMenuInlineKeyboard — меню привычки с habitID в callback.
+func habitMenuInlineKeyboard(habitID int64) *tgbotapi.InlineKeyboardMarkup {
+	id := strconv.FormatInt(habitID, 10)
+	kb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("💥 Срыв", "relapse:"+id+":menu"),
+			tgbotapi.NewInlineKeyboardButtonData("📊 Статистика", "habit_stats:"+id),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🏠 На главную", "go_main"),
 		),
 	)
-	kb.ResizeKeyboard = true
-	return kb
+	return &kb
+}
+
+// confirmRelapseInlineKeyboard — Да/Нет с habitID (и куда вернуться: main|menu).
+func confirmRelapseInlineKeyboard(habitID int64, back string) *tgbotapi.InlineKeyboardMarkup {
+	id := strconv.FormatInt(habitID, 10)
+	if back != "menu" {
+		back = "main"
+	}
+	kb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✅ Да", "relapse_yes:"+id),
+			tgbotapi.NewInlineKeyboardButtonData("❌ Нет", "relapse_no:"+id+":"+back),
+		),
+	)
+	return &kb
+}
+
+// statsBackInlineKeyboard — назад в меню привычки.
+func statsBackInlineKeyboard(habitID int64) *tgbotapi.InlineKeyboardMarkup {
+	id := strconv.FormatInt(habitID, 10)
+	kb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("◀️ Назад", "habit_menu:"+id),
+			tgbotapi.NewInlineKeyboardButtonData("🏠 На главную", "go_main"),
+		),
+	)
+	return &kb
 }
 
 // periodKeyboard shows period selection buttons.
@@ -142,13 +140,3 @@ func defaultHabitNamesKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	return kb
 }
 
-// backKeyboard shows just a Back button.
-func backKeyboard() tgbotapi.ReplyKeyboardMarkup {
-	kb := tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("◀️ Назад"),
-		),
-	)
-	kb.ResizeKeyboard = true
-	return kb
-}

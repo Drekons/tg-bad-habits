@@ -33,22 +33,30 @@ func NewStatsService() *StatsService {
 	return &StatsService{}
 }
 
-// Calc returns full HabitStats for a habit.
-// relapses may be a windowed slice (e.g. last year); totalRelapses is the lifetime count for AvgPerPeriod.
-// If totalRelapses < 0, len(relapses) is used.
+// Calc returns full HabitStats for a habit (uses len(relapses) as lifetime counts).
 func (s *StatsService) Calc(habit models.Habit, relapses []models.Relapse, now time.Time) HabitStats {
-	return s.CalcWithTotal(habit, relapses, -1, now)
+	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	beforeToday := 0
+	for _, r := range relapses {
+		if r.RelapsedAt.Before(startOfToday) {
+			beforeToday++
+		}
+	}
+	return s.CalcWithTotals(habit, relapses, len(relapses), beforeToday, now)
 }
 
-// CalcWithTotal is like Calc but uses totalRelapses for the lifetime average (when relapses is windowed).
-func (s *StatsService) CalcWithTotal(habit models.Habit, relapses []models.Relapse, totalRelapses int, now time.Time) HabitStats {
+// CalcWithTotals uses lifetime totals from DB (windowed relapses slice for balance/avg time).
+// totalBeforeToday must be COUNT(relapsed_at < startOfToday).
+func (s *StatsService) CalcWithTotals(habit models.Habit, relapses []models.Relapse, totalRelapses, totalBeforeToday int, now time.Time) HabitStats {
 	if totalRelapses < 0 {
 		totalRelapses = len(relapses)
+	}
+	if totalBeforeToday < 0 {
+		totalBeforeToday = 0
 	}
 
 	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	relapsesUntilYesterday := filterUntil(relapses, startOfToday)
-	totalUntilYesterday := countUntil(totalRelapses, relapses, startOfToday)
 
 	balanceNow := calcBalance(habit, relapses, now)
 	balanceYesterday := calcBalance(habit, relapsesUntilYesterday, startOfToday)
@@ -63,7 +71,7 @@ func (s *StatsService) CalcWithTotal(habit models.Habit, relapses []models.Relap
 	}
 
 	avgPerNow := calcAvgPerPeriod(habit, totalRelapses, now)
-	avgPerYesterday := calcAvgPerPeriod(habit, totalUntilYesterday, startOfToday)
+	avgPerYesterday := calcAvgPerPeriod(habit, totalBeforeToday, startOfToday)
 	avgPerDelta := avgPerNow - avgPerYesterday
 
 	return HabitStats{
@@ -92,20 +100,22 @@ func (s *StatsService) CalcWithTotal(habit models.Habit, relapses []models.Relap
 	}
 }
 
-// countUntil estimates lifetime count as of cutoff when we only have a windowed slice + total.
-// ponytail: if window doesn't reach origin, yesterday's total ≈ total - (relapses in window after cutoff); good enough for daily trend.
-func countUntil(total int, window []models.Relapse, cutoff time.Time) int {
-	after := 0
-	for _, r := range window {
-		if !r.RelapsedAt.Before(cutoff) {
-			after++
+// CalcWithTotal keeps the old signature; before-today total is approximated from the window.
+func (s *StatsService) CalcWithTotal(habit models.Habit, relapses []models.Relapse, totalRelapses int, now time.Time) HabitStats {
+	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	inWindowBefore := 0
+	for _, r := range relapses {
+		if r.RelapsedAt.Before(startOfToday) {
+			inWindowBefore++
 		}
 	}
-	n := total - after
-	if n < 0 {
-		return 0
+	// If window covers full history, inWindowBefore == true before-today count.
+	before := inWindowBefore
+	if totalRelapses >= 0 && totalRelapses > len(relapses) {
+		// Window incomplete: keep in-window before count as lower bound — prefer CountByHabitIDBefore at call site.
+		before = inWindowBefore
 	}
-	return n
+	return s.CalcWithTotals(habit, relapses, totalRelapses, before, now)
 }
 
 // countRelapsesInPeriod returns the number of relapses in the current period for the habit.

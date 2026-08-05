@@ -10,16 +10,24 @@ import (
 )
 
 func main() {
+	lock, err := acquireInstanceLock()
+	if err != nil {
+		log.Fatalf("lock: %v", err)
+	}
+	defer lock.Close()
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
 
+	log.Printf("DB: applying migrations from %s (if any)...", cfg.DBMigrationsPath)
 	database, err := db.Connect(cfg.DBDSN, cfg.DBMigrationsPath)
 	if err != nil {
 		log.Fatalf("db: %v", err)
 	}
 	defer database.Close()
+	log.Printf("DB: ready")
 
 	userRepo := repository.NewUserRepo(database)
 	habitRepo := repository.NewHabitRepo(database)

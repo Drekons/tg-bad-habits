@@ -14,6 +14,7 @@ type Bot struct {
 	api     *tgbotapi.BotAPI
 	handler *Handler
 	updater *Updater
+	serial  *userSerial
 }
 
 // New creates and wires up a Bot instance.
@@ -41,6 +42,7 @@ func New(
 		api:     api,
 		handler: handler,
 		updater: updater,
+		serial:  newUserSerial(),
 	}, nil
 }
 
@@ -56,11 +58,15 @@ func (b *Bot) Run() {
 
 	for update := range updates {
 		if update.CallbackQuery != nil {
-			go b.handler.HandleCallbackQuery(update.CallbackQuery)
+			cq := update.CallbackQuery
+			uid := cq.From.ID
+			go b.serial.run(uid, func() { b.handler.HandleCallbackQuery(cq) })
 			continue
 		}
-		if update.Message != nil {
-			go b.handler.Handle(update)
+		if update.Message != nil && update.Message.From != nil {
+			msg := update.Message
+			uid := msg.From.ID
+			go b.serial.run(uid, func() { b.handler.Handle(update) })
 		}
 	}
 }

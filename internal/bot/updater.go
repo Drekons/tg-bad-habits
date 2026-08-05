@@ -12,7 +12,6 @@ import (
 )
 
 // Updater refreshes the main screen message for users who have it open, once per minute.
-// It uses the DB-stored main_message_id so refresh keeps working after app redeploy.
 type Updater struct {
 	bot         *tgbotapi.BotAPI
 	userRepo    *repository.UserRepo
@@ -37,7 +36,6 @@ func NewUpdater(
 	}
 }
 
-// Start launches the background ticker. Should be called in a goroutine.
 func (u *Updater) Start() {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
@@ -54,11 +52,12 @@ func (u *Updater) refresh() {
 		return
 	}
 	if len(users) == 0 {
-		log.Printf("Updater: 0 users with main_message_id in DB (автообновление не сработает до открытия главной без «На основной экран»)")
 		return
 	}
 	log.Printf("Updater: refreshing %d user(s)", len(users))
 	now := time.Now()
+	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+
 	for _, m := range users {
 		habits, err := u.habitRepo.GetByUserID(m.UserID)
 		if err != nil || len(habits) == 0 {
@@ -76,27 +75,29 @@ func (u *Updater) refresh() {
 			if err != nil {
 				total = len(relapses)
 			}
-			statsSlice[i] = u.statsSvc.CalcWithTotal(habit, relapses, total, now)
+			before, err := u.relapseRepo.CountByHabitIDBefore(habit.ID, startOfToday)
+			if err != nil {
+				before = 0
+			}
+			statsSlice[i] = u.statsSvc.CalcWithTotals(habit, relapses, total, before, now)
 		}
 
 		text := RenderMainScreen(habits, statsSlice)
 		inlineKb := mainInlineKeyboard(habits)
 
 		editMsg := tgbotapi.NewEditMessageText(m.ChatID, m.MessageID, text)
-		editMsg.ParseMode = tgbotapi.ModeMarkdown
+		editMsg.ParseMode = tgbotapi.ModeHTML
+		editMsg.ReplyMarkup = inlineKb
 		if _, err := u.bot.Send(editMsg); err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "message to edit not found") ||
-				strings.Contains(strings.ToLower(err.Error()), "message is not modified") {
+			errLow := strings.ToLower(err.Error())
+			if strings.Contains(errLow, "message is not modified") {
+				continue // already up to date — keep main_message_id
+			}
+			if strings.Contains(errLow, "message to edit not found") {
 				_ = u.userRepo.ClearMainMessage(m.UserID)
 			} else {
 				log.Printf("Updater EditMessageText [user=%d]: %v", m.UserID, err)
 			}
-			continue
-		}
-
-		editMarkup := tgbotapi.NewEditMessageReplyMarkup(m.ChatID, m.MessageID, *inlineKb)
-		if _, err := u.bot.Send(editMarkup); err != nil {
-			log.Printf("Updater EditMessageReplyMarkup [user=%d]: %v", m.UserID, err)
 		}
 	}
 }

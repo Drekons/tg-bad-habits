@@ -74,6 +74,26 @@ func (r *UserRepo) ClearMainMessage(userID int64) error {
 	return nil
 }
 
+// GetMainMessage returns stored main screen ids. ok=false if not set.
+func (r *UserRepo) GetMainMessage(userID int64) (chatID int64, messageID int, ok bool, err error) {
+	var row struct {
+		ChatID    sql.NullInt64 `db:"main_chat_id"`
+		MessageID sql.NullInt64 `db:"main_message_id"`
+	}
+	err = r.db.Get(&row,
+		"SELECT main_chat_id, main_message_id FROM users WHERE id = ?", userID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, 0, false, nil
+		}
+		return 0, 0, false, fmt.Errorf("UserRepo.GetMainMessage: %w", err)
+	}
+	if !row.ChatID.Valid || !row.MessageID.Valid || row.MessageID.Int64 == 0 {
+		return 0, 0, false, nil
+	}
+	return row.ChatID.Int64, int(row.MessageID.Int64), true, nil
+}
+
 // GetUsersWithMainMessage returns all users that have a main screen message to refresh.
 func (r *UserRepo) GetUsersWithMainMessage() ([]MainMessage, error) {
 	var rows []struct {

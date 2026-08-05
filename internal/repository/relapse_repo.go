@@ -66,6 +66,19 @@ func (r *RelapseRepo) CountByHabitID(habitID int64) (int, error) {
 	return n, nil
 }
 
+// CountByHabitIDBefore returns relapses strictly before cutoff.
+func (r *RelapseRepo) CountByHabitIDBefore(habitID int64, before time.Time) (int, error) {
+	var n int
+	err := r.db.Get(&n,
+		"SELECT COUNT(*) FROM relapses WHERE habit_id = ? AND relapsed_at < ?",
+		habitID, before,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("RelapseRepo.CountByHabitIDBefore: %w", err)
+	}
+	return n, nil
+}
+
 // GetLast20ByHabitID returns the last 20 relapses, ordered newest first.
 func (r *RelapseRepo) GetLast20ByHabitID(habitID int64) ([]models.Relapse, error) {
 	var relapses []models.Relapse

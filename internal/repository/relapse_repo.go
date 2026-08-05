@@ -42,6 +42,30 @@ func (r *RelapseRepo) GetByHabitID(habitID int64) ([]models.Relapse, error) {
 	return relapses, nil
 }
 
+// GetByHabitIDSince returns relapses at or after since, ordered ascending.
+func (r *RelapseRepo) GetByHabitIDSince(habitID int64, since time.Time) ([]models.Relapse, error) {
+	var relapses []models.Relapse
+	err := r.db.Select(&relapses,
+		`SELECT id, habit_id, relapsed_at FROM relapses
+		 WHERE habit_id = ? AND relapsed_at >= ? ORDER BY relapsed_at ASC`,
+		habitID, since,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("RelapseRepo.GetByHabitIDSince: %w", err)
+	}
+	return relapses, nil
+}
+
+// CountByHabitID returns the total number of relapses for a habit.
+func (r *RelapseRepo) CountByHabitID(habitID int64) (int, error) {
+	var n int
+	err := r.db.Get(&n, "SELECT COUNT(*) FROM relapses WHERE habit_id = ?", habitID)
+	if err != nil {
+		return 0, fmt.Errorf("RelapseRepo.CountByHabitID: %w", err)
+	}
+	return n, nil
+}
+
 // GetLast20ByHabitID returns the last 20 relapses, ordered newest first.
 func (r *RelapseRepo) GetLast20ByHabitID(habitID int64) ([]models.Relapse, error) {
 	var relapses []models.Relapse

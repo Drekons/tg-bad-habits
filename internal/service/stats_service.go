@@ -33,12 +33,22 @@ func NewStatsService() *StatsService {
 	return &StatsService{}
 }
 
-// Calc returns full HabitStats for a habit given all its relapses and the reference time.
+// Calc returns full HabitStats for a habit.
+// relapses may be a windowed slice (e.g. last year); totalRelapses is the lifetime count for AvgPerPeriod.
+// If totalRelapses < 0, len(relapses) is used.
 func (s *StatsService) Calc(habit models.Habit, relapses []models.Relapse, now time.Time) HabitStats {
-	// "Yesterday" = start of today (00:00:00)
-	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	return s.CalcWithTotal(habit, relapses, -1, now)
+}
 
+// CalcWithTotal is like Calc but uses totalRelapses for the lifetime average (when relapses is windowed).
+func (s *StatsService) CalcWithTotal(habit models.Habit, relapses []models.Relapse, totalRelapses int, now time.Time) HabitStats {
+	if totalRelapses < 0 {
+		totalRelapses = len(relapses)
+	}
+
+	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	relapsesUntilYesterday := filterUntil(relapses, startOfToday)
+	totalUntilYesterday := countUntil(totalRelapses, relapses, startOfToday)
 
 	balanceNow := calcBalance(habit, relapses, now)
 	balanceYesterday := calcBalance(habit, relapsesUntilYesterday, startOfToday)
@@ -48,13 +58,12 @@ func (s *StatsService) Calc(habit models.Habit, relapses []models.Relapse, now t
 
 	balanceDelta := balanceNow - balanceYesterday
 	avgTimeDelta := avgTimeNow - avgTimeYesterday
-	// При нуле срывов тренд времени = просто "часы с полуночи", что неинформативно — показываем 0
-	if len(relapses) == 0 {
+	if totalRelapses == 0 {
 		avgTimeDelta = 0
 	}
 
-	avgPerNow := calcAvgPerPeriod(habit, relapses, now)
-	avgPerYesterday := calcAvgPerPeriod(habit, relapsesUntilYesterday, startOfToday)
+	avgPerNow := calcAvgPerPeriod(habit, totalRelapses, now)
+	avgPerYesterday := calcAvgPerPeriod(habit, totalUntilYesterday, startOfToday)
 	avgPerDelta := avgPerNow - avgPerYesterday
 
 	return HabitStats{
@@ -77,14 +86,29 @@ func (s *StatsService) Calc(habit models.Habit, relapses []models.Relapse, now t
 			Current:  avgPerNow,
 			Previous: avgPerYesterday,
 			Delta:    avgPerDelta,
-			Up:       avgPerDelta > 0, // рост среднего числа срывов — хуже
+			Up:       avgPerDelta > 0,
 		},
 		RelapsesInPeriod: countRelapsesInPeriod(habit, relapses, now),
 	}
 }
 
+// countUntil estimates lifetime count as of cutoff when we only have a windowed slice + total.
+// ponytail: if window doesn't reach origin, yesterday's total ≈ total - (relapses in window after cutoff); good enough for daily trend.
+func countUntil(total int, window []models.Relapse, cutoff time.Time) int {
+	after := 0
+	for _, r := range window {
+		if !r.RelapsedAt.Before(cutoff) {
+			after++
+		}
+	}
+	n := total - after
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
 // countRelapsesInPeriod returns the number of relapses in the current period for the habit.
-// Day = from 00:00 today; month = current calendar month; 3m/6m/year = last 90/180/365 days.
 func countRelapsesInPeriod(habit models.Habit, relapses []models.Relapse, now time.Time) int {
 	start := periodStart(habit.AvgRelapsesPeriod, now)
 	var n int
@@ -111,14 +135,48 @@ func periodStart(period models.AvgPeriod, now time.Time) time.Time {
 	}
 }
 
-// calcBalance computes: potentialLoss(until) - realLoss(relapses).
-// For habits with period "day", uses effective (waking) days: see effectiveWakingHours.
+// balanceWindowStart: баланс всегда за последний год (или с origin, если привычка моложе).
+func balanceWindowStart(habit models.Habit, until time.Time) time.Time {
+	start := until.AddDate(0, 0, -365)
+	if habit.OriginAt.After(start) {
+		return habit.OriginAt
+	}
+	return start
+}
+
+// avgTimeWindowStart: для ежедневных — месяц, иначе — год.
+func avgTimeWindowStart(habit models.Habit, until time.Time) time.Time {
+	var start time.Time
+	if habit.AvgRelapsesPeriod == models.PeriodDay {
+		start = until.AddDate(0, 0, -30)
+	} else {
+		start = until.AddDate(0, 0, -365)
+	}
+	if habit.OriginAt.After(start) {
+		return habit.OriginAt
+	}
+	return start
+}
+
+// StatsLoadSince returns the earliest time we need relapses for balance + avg time windows.
+func StatsLoadSince(habit models.Habit, now time.Time) time.Time {
+	b := balanceWindowStart(habit, now)
+	a := avgTimeWindowStart(habit, now)
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
+// calcBalance: potential − real за последний год (окно).
 func calcBalance(habit models.Habit, relapses []models.Relapse, until time.Time) float64 {
 	if until.Before(habit.OriginAt) {
 		return 0
 	}
-	elapsed := until.Sub(habit.OriginAt)
-	// Show intermediate balance even right after creation: use at least 1 minute so balance is not stuck at 0.
+	start := balanceWindowStart(habit, until)
+	inWindow := filterSince(relapses, start, until)
+
+	elapsed := until.Sub(start)
 	if elapsed > 0 && elapsed < time.Minute {
 		elapsed = time.Minute
 	}
@@ -130,14 +188,13 @@ func calcBalance(habit models.Habit, relapses []models.Relapse, until time.Time)
 	}
 	avgPerDay := habit.AvgRelapsesCount / habit.AvgRelapsesPeriod.Days()
 	potentialLoss := avgPerDay * daysSince * habit.CostPerRelapse
-	realLoss := float64(len(relapses)) * habit.CostPerRelapse
+	realLoss := float64(len(inWindow)) * habit.CostPerRelapse
 	balance := math.Round((potentialLoss-realLoss)*100) / 100
-	// Когда срывов не было и время прошло, баланс не должен быть 0 (промежуточный баланс).
-	if len(relapses) == 0 && until.After(habit.OriginAt) && balance <= 0 {
+	if len(inWindow) == 0 && until.After(habit.OriginAt) && balance <= 0 {
 		daysSince = math.Max(daysSince, 1)
 		avgPerDayMin := habit.AvgRelapsesCount / habit.AvgRelapsesPeriod.Days()
 		if avgPerDayMin <= 0 {
-			avgPerDayMin = 1.0 / 365 // минимум 1 срыв в год для отображения
+			avgPerDayMin = 1.0 / 365
 		}
 		if habit.CostPerRelapse > 0 {
 			potentialLoss = avgPerDayMin * daysSince * habit.CostPerRelapse
@@ -147,9 +204,7 @@ func calcBalance(habit models.Habit, relapses []models.Relapse, until time.Time)
 	return balance
 }
 
-// effectiveWakingHours returns waking hours for a daily habit: first 24h from origin count
-// fully; after that, each real hour contributes 16/24 waking hours (8h sleep spread smoothly
-// over each day after the registration day).
+// effectiveWakingHours: первые 24ч полностью; дальше 16/24 на каждый час.
 func effectiveWakingHours(elapsed time.Duration) float64 {
 	totalHours := elapsed.Hours()
 	if totalHours <= 0 {
@@ -161,26 +216,27 @@ func effectiveWakingHours(elapsed time.Duration) float64 {
 	return 24 + (totalHours-24)*(16.0/24.0)
 }
 
-// calcAvgTimeBetween computes mean duration of all intervals including the ongoing one up to 'until'.
-// For period "day", total time is effective waking time (8h sleep per full day after registration day excluded).
+// calcAvgTimeBetween: среднее за месяц (day) или год (остальные), включая текущий интервал.
 func calcAvgTimeBetween(habit models.Habit, relapses []models.Relapse, until time.Time) time.Duration {
 	if until.Before(habit.OriginAt) {
 		return 0
 	}
-	elapsed := until.Sub(habit.OriginAt)
+	start := avgTimeWindowStart(habit, until)
+	inWindow := filterSince(relapses, start, until)
+
+	elapsed := until.Sub(start)
 	var total time.Duration
 	if habit.AvgRelapsesPeriod == models.PeriodDay {
 		total = time.Duration(effectiveWakingHours(elapsed) * float64(time.Hour))
 	} else {
 		total = elapsed
 	}
-	intervals := len(relapses) + 1
+	intervals := len(inWindow) + 1
 	return total / time.Duration(intervals)
 }
 
-// calcAvgPerPeriod computes real average relapses per the habit's period since origin.
-// For period "day", elapsed "days" match balance (effective waking / 16).
-func calcAvgPerPeriod(habit models.Habit, relapses []models.Relapse, now time.Time) float64 {
+// calcAvgPerPeriod: среднее срывов за период привычки с origin (lifetime count).
+func calcAvgPerPeriod(habit models.Habit, relapseCount int, now time.Time) float64 {
 	if now.Before(habit.OriginAt) {
 		return 0
 	}
@@ -199,15 +255,25 @@ func calcAvgPerPeriod(habit models.Habit, relapses []models.Relapse, now time.Ti
 	if periods <= 0 {
 		return 0
 	}
-	avg := float64(len(relapses)) / periods
+	avg := float64(relapseCount) / periods
 	return math.Round(avg*100) / 100
 }
 
-// filterUntil returns only relapses that occurred strictly before the cutoff.
 func filterUntil(relapses []models.Relapse, until time.Time) []models.Relapse {
 	var result []models.Relapse
 	for _, r := range relapses {
 		if r.RelapsedAt.Before(until) {
+			result = append(result, r)
+		}
+	}
+	return result
+}
+
+// filterSince keeps relapses in [start, until].
+func filterSince(relapses []models.Relapse, start, until time.Time) []models.Relapse {
+	var result []models.Relapse
+	for _, r := range relapses {
+		if !r.RelapsedAt.Before(start) && !r.RelapsedAt.After(until) {
 			result = append(result, r)
 		}
 	}

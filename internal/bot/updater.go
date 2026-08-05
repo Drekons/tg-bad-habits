@@ -67,11 +67,16 @@ func (u *Updater) refresh() {
 
 		statsSlice := make([]service.HabitStats, len(habits))
 		for i, habit := range habits {
-			relapses, err := u.relapseRepo.GetByHabitID(habit.ID)
+			since := service.StatsLoadSince(habit, now)
+			relapses, err := u.relapseRepo.GetByHabitIDSince(habit.ID, since)
 			if err != nil {
 				continue
 			}
-			statsSlice[i] = u.statsSvc.Calc(habit, relapses, now)
+			total, err := u.relapseRepo.CountByHabitID(habit.ID)
+			if err != nil {
+				total = len(relapses)
+			}
+			statsSlice[i] = u.statsSvc.CalcWithTotal(habit, relapses, total, now)
 		}
 
 		text := RenderMainScreen(habits, statsSlice)

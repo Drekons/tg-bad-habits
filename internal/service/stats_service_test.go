@@ -162,6 +162,48 @@ func TestCalcAvgTimeBetween_MultipleRelapses(t *testing.T) {
 	}
 }
 
+// Ежедневная привычка: среднее время только за последний месяц (старые срывы не влияют).
+func TestCalcAvgTimeBetween_DayPeriod_UsesLastMonth(t *testing.T) {
+	h := habitBase()
+	until := h.OriginAt.Add(60 * 24 * time.Hour)
+	var relapses []models.Relapse
+	// Старые срывы (вне месяца) — не должны учитываться.
+	for i := 0; i < 10; i++ {
+		relapses = append(relapses, models.Relapse{RelapsedAt: h.OriginAt.Add(time.Duration(i) * 24 * time.Hour)})
+	}
+	// 2 срыва в окне последнего месяца.
+	relapses = append(relapses,
+		models.Relapse{RelapsedAt: until.Add(-10 * 24 * time.Hour)},
+		models.Relapse{RelapsedAt: until.Add(-5 * 24 * time.Hour)},
+	)
+	got := calcAvgTimeBetween(h, relapses, until)
+	start := until.AddDate(0, 0, -30)
+	elapsed := until.Sub(start)
+	wantTotal := time.Duration(effectiveWakingHours(elapsed) * float64(time.Hour))
+	want := wantTotal / 3 // 2 relapses + ongoing
+	if got != want {
+		t.Errorf("expected %v (month window), got %v", want, got)
+	}
+}
+
+// Баланс за год: срывы старше года не входят в realLoss.
+func TestCalcBalance_YearWindow_IgnoresOldRelapses(t *testing.T) {
+	h := habitBase()
+	h.AvgRelapsesPeriod = models.PeriodMonth
+	h.AvgRelapsesCount = 1
+	h.CostPerRelapse = 100
+	until := h.OriginAt.Add(400 * 24 * time.Hour)
+	relapses := []models.Relapse{
+		{RelapsedAt: h.OriginAt.Add(10 * 24 * time.Hour)},             // >1 year before until
+		{RelapsedAt: until.Add(-10 * 24 * time.Hour)},                 // in window
+	}
+	got := calcBalance(h, relapses, until)
+	// window = 365d, potential = (1/30)*365*100 ≈ 1216.67, real = 1*100 → ~1116.67
+	if got < 1100 || got > 1200 {
+		t.Errorf("expected ~1116 balance for 1 relapse in year window, got %v", got)
+	}
+}
+
 // ─── PeriodDays ───────────────────────────────────────────────────────────────
 
 func TestPeriodDays(t *testing.T) {

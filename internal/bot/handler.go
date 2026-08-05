@@ -107,31 +107,48 @@ func (h *Handler) HandleCallbackQuery(cq *tgbotapi.CallbackQuery) {
 	case data == "main_menu":
 		h.showMainMenuScreen(chatID, userID)
 
+	case data == "habit_back":
+		h.returnFromHabitMenuToMain(chatID, userID)
+
 	case strings.HasPrefix(data, "habit_menu:"):
-		idStr := strings.TrimPrefix(data, "habit_menu:")
-		habitID, err := strconv.ParseInt(idStr, 10, 64)
-		if err != nil {
-			return
-		}
-		habit, getErr := h.habitRepo.GetByID(habitID)
-		if getErr != nil || habit == nil || habit.UserID != userID {
+		habitID, ok := h.parseOwnedHabitID(userID, strings.TrimPrefix(data, "habit_menu:"))
+		if !ok {
 			return
 		}
 		h.showHabitMenu(chatID, userID, habitID)
 
+	case strings.HasPrefix(data, "habit_stats:"):
+		habitID, ok := h.parseOwnedHabitID(userID, strings.TrimPrefix(data, "habit_stats:"))
+		if !ok {
+			return
+		}
+		h.showHabitStatsByID(chatID, userID, habitID)
+
 	case strings.HasPrefix(data, "relapse:"):
-		idStr := strings.TrimPrefix(data, "relapse:")
-		habitID, err := strconv.ParseInt(idStr, 10, 64)
-		if err != nil {
+		habitID, ok := h.parseOwnedHabitID(userID, strings.TrimPrefix(data, "relapse:"))
+		if !ok {
 			return
 		}
-		habit, getErr := h.habitRepo.GetByID(habitID)
-		if getErr != nil || habit == nil || habit.UserID != userID {
-			return
+		if h.states.GetState(userID) == StateViewingHabitMenu {
+			h.states.SetReturnAfterRelapse(userID, habitID)
+		} else {
+			h.states.SetReturnAfterRelapse(userID, 0)
 		}
-		h.states.SetReturnAfterRelapse(userID, 0) // return to main after confirm
 		h.askConfirmRelapseByID(chatID, userID, habitID)
 	}
+}
+
+// parseOwnedHabitID parses habit id and checks it belongs to userID.
+func (h *Handler) parseOwnedHabitID(userID int64, idStr string) (int64, bool) {
+	habitID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	habit, getErr := h.habitRepo.GetByID(habitID)
+	if getErr != nil || habit == nil || habit.UserID != userID {
+		return 0, false
+	}
+	return habitID, true
 }
 
 // ─── /start ─────────────────────────────────────────────────────────────────
@@ -295,11 +312,18 @@ func (h *Handler) showMainMenuScreen(chatID int64, userID int64) {
 	h.states.SetMenuMessageID(userID, sent.MessageID)
 }
 
-// showHabitMenu отправляет сообщение «Выберите действие» с Reply Срыв/Статистика/Назад, сохраняет ViewingHabitID и MenuMessageID.
+// showHabitMenu — inline-кнопки с habitID (статистика работает даже без in-memory state / при втором инстансе).
 func (h *Handler) showHabitMenu(chatID int64, userID int64, habitID int64) {
 	h.states.SetState(userID, StateViewingHabitMenu)
 	h.states.SetViewingHabitID(userID, habitID)
-	sent := h.send(chatID, "Выберите действие:", habitMenuReplyKeyboard())
+	_ = h.userRepo.ClearMainMessage(userID)
+	// Снять старую Reply-клавиатуру, затем меню на inline.
+	h.send(chatID, "Выберите действие:", removeKeyboard())
+	sent, err := h.sendMarkdown(chatID, "Выберите действие:", habitMenuInlineKeyboard(habitID))
+	if err != nil {
+		log.Printf("showHabitMenu: %v", err)
+		return
+	}
 	h.states.SetMenuMessageID(userID, sent.MessageID)
 }
 
@@ -339,14 +363,15 @@ func (h *Handler) showHabitStatsByID(chatID int64, userID int64, habitID int64) 
 		return
 	}
 
-	relapses, _ := h.relapseRepo.GetByHabitID(habit.ID)
+	st := h.calcHabitStats(*habit)
 	last20, _ := h.relapseRepo.GetLast20ByHabitID(habit.ID)
-	st := h.statsSvc.Calc(*habit, relapses, time.Now())
 	text := RenderStatsScreen(*habit, st, last20)
 
 	h.states.SetState(userID, StateViewingHabitStats)
 	h.states.SetViewingHabitID(userID, habitID)
-	_, _ = h.sendMarkdown(chatID, text, backKeyboard()) // Назад → в меню привычки
+	if _, err := h.sendMarkdown(chatID, text, backKeyboard()); err != nil {
+		log.Printf("showHabitStatsByID send: %v", err)
+	}
 }
 
 // ─── Relapse flow ─────────────────────────────────────────────────────────────
@@ -427,6 +452,7 @@ func (h *Handler) handleHabitCreationStep(msg *tgbotapi.Message, state State) {
 			h.send(msg.Chat.ID, "Введите корректное число (например: 250 или 99.50):", removeKeyboard())
 			return
 		}
+		draft.CostPerRelapse = cost
 		h.states.SetState(userID, StateHabitAvgPeriod)
 		h.send(msg.Chat.ID, "Шаг 4/5: Выберите *период* для расчета среднего количества срывов:", periodKeyboard())
 
@@ -485,10 +511,25 @@ func (h *Handler) handleHabitCreationStep(msg *tgbotapi.Message, state State) {
 func (h *Handler) buildAllStats(habits []models.Habit) []service.HabitStats {
 	stats := make([]service.HabitStats, len(habits))
 	for i, habit := range habits {
-		relapses, _ := h.relapseRepo.GetByHabitID(habit.ID)
-		stats[i] = h.statsSvc.Calc(habit, relapses, time.Now())
+		stats[i] = h.calcHabitStats(habit)
 	}
 	return stats
+}
+
+// calcHabitStats loads a year window of relapses + lifetime count (avg per period).
+func (h *Handler) calcHabitStats(habit models.Habit) service.HabitStats {
+	now := time.Now()
+	since := service.StatsLoadSince(habit, now)
+	relapses, err := h.relapseRepo.GetByHabitIDSince(habit.ID, since)
+	if err != nil {
+		log.Printf("calcHabitStats GetByHabitIDSince: %v", err)
+	}
+	total, err := h.relapseRepo.CountByHabitID(habit.ID)
+	if err != nil {
+		log.Printf("calcHabitStats CountByHabitID: %v", err)
+		total = len(relapses)
+	}
+	return h.statsSvc.CalcWithTotal(habit, relapses, total, now)
 }
 
 func (h *Handler) send(chatID int64, text string, kb interface{}) tgbotapi.Message {

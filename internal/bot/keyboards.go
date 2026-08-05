@@ -63,7 +63,7 @@ func mainMenuReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	return kb
 }
 
-// habitMenuReplyKeyboard — Reply для экрана меню привычки: Срыв, Статистика, Назад.
+// habitMenuReplyKeyboard — legacy Reply (на случай старых сообщений).
 func habitMenuReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	kb := tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButtonRow(
@@ -76,6 +76,21 @@ func habitMenuReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	)
 	kb.ResizeKeyboard = true
 	return kb
+}
+
+// habitMenuInlineKeyboard — меню привычки с habitID в callback (не зависит от in-memory state).
+func habitMenuInlineKeyboard(habitID int64) *tgbotapi.InlineKeyboardMarkup {
+	id := strconv.FormatInt(habitID, 10)
+	kb := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("💥 Срыв", "relapse:"+id),
+			tgbotapi.NewInlineKeyboardButtonData("📊 Статистика", "habit_stats:"+id),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("◀️ Назад", "habit_back"),
+		),
+	)
+	return &kb
 }
 
 // confirmRelapseKeyboard shows Yes/No for relapse confirmation.

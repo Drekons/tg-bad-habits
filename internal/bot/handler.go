@@ -198,6 +198,9 @@ func (h *Handler) handleStart(msg *tgbotapi.Message) {
 	if user != nil {
 		habits, _ := h.habitRepo.GetByUserID(userID)
 		h.states.SetState(userID, StateIdle)
+		// После очистки истории чата edit старого main_message_id «успешен», но юзер его не видит.
+		_ = h.userRepo.ClearMainMessage(userID)
+		h.states.SetMainMessageID(userID, 0)
 		h.sendHTML(msg.Chat.ID, "С возвращением! 👋", nil)
 		if len(habits) > 0 {
 			h.goMain(msg.Chat.ID, userID)

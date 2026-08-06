@@ -95,11 +95,18 @@ func (h *Handler) HandleCallbackQuery(cq *tgbotapi.CallbackQuery) {
 		cqMsgID = cq.Message.MessageID
 	}
 
-	if _, err := h.bot.Request(tgbotapi.NewCallback(cq.ID, "")); err != nil {
-		log.Printf("HandleCallbackQuery Answer: %v", err)
-	}
-
 	editID := h.overlayEditID(userID, cqMsgID)
+
+	// Пустой answer по умолчанию; relapse_yes отвечает сам (toast в чат не пишет).
+	answered := false
+	defer func() {
+		if answered {
+			return
+		}
+		if _, err := h.bot.Request(tgbotapi.NewCallback(cq.ID, "")); err != nil {
+			log.Printf("HandleCallbackQuery Answer: %v", err)
+		}
+	}()
 
 	switch {
 	case data == "main_menu":
@@ -130,7 +137,8 @@ func (h *Handler) HandleCallbackQuery(cq *tgbotapi.CallbackQuery) {
 		if !ok {
 			return
 		}
-		h.confirmRelapse(chatID, userID, habitID)
+		answered = true
+		h.confirmRelapse(chatID, userID, habitID, cq.ID)
 
 	case strings.HasPrefix(data, "relapse_no:"):
 		rest := strings.TrimPrefix(data, "relapse_no:")
@@ -376,16 +384,22 @@ func (h *Handler) declineRelapse(chatID int64, userID int64, habitID int64, back
 	h.goMain(chatID, userID)
 }
 
-func (h *Handler) confirmRelapse(chatID int64, userID int64, habitID int64) {
+func (h *Handler) confirmRelapse(chatID int64, userID int64, habitID int64, callbackID string) {
+	toast := "✅ Срыв зарегистрирован"
 	if err := h.habitSvc.RegisterRelapse(habitID); err != nil {
 		log.Printf("RegisterRelapse: %v", err)
-		h.sendHTML(chatID, "Ошибка при регистрации срыва. Попробуйте снова.", nil)
+		toast = "Ошибка при регистрации срыва"
+		if _, cbErr := h.bot.Request(tgbotapi.NewCallback(callbackID, toast)); cbErr != nil {
+			log.Printf("confirmRelapse callback: %v", cbErr)
+		}
 		return
+	}
+	if _, err := h.bot.Request(tgbotapi.NewCallback(callbackID, toast)); err != nil {
+		log.Printf("confirmRelapse callback: %v", err)
 	}
 	h.states.SetReturnAfterRelapse(userID, 0)
 	h.states.SetPendingHabit(userID, 0)
 	h.deleteMenuMessageIfSet(chatID, userID)
-	h.sendHTML(chatID, "✅ Срыв зарегистрирован.", nil)
 	h.goMain(chatID, userID)
 }
 
